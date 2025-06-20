@@ -5,6 +5,8 @@ import firebase_admin
 from firebase_admin import credentials, db
 import json
 
+st.write("🔍 Firebase config keys loaded:", list(st.secrets["firebase"].keys()))
+
 # 🔐 Load Firebase credentials from Streamlit Secrets
 firebase_config = st.secrets["firebase"]
 cred = credentials.Certificate(dict(firebase_config))
@@ -54,3 +56,5 @@ if data:
     st.download_button("📥 Download as CSV", data=csv, file_name='credit_requests.csv', mime='text/csv')
 else:
     st.info("No credit requests submitted yet.")
+
+
