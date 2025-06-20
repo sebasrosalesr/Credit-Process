@@ -2,13 +2,11 @@ import streamlit as st
 import pandas as pd
 import firebase_admin
 from firebase_admin import credentials, db
+from datetime import datetime
+import json
 
-# Load Firebase credentials from secrets and initialize
-firebase_config = dict(st.secrets["firebase"])
-
-# Ensure private key is properly formatted (in case Streamlit reads it as raw)
-firebase_config["private_key"] = firebase_config["private_key"].replace("\\n", "\n")
-
+# --- Load Firebase credentials ---
+firebase_config = {key: st.secrets["firebase"][key] for key in st.secrets["firebase"].keys()}
 cred = credentials.Certificate(firebase_config)
 
 if not firebase_admin._apps:
@@ -16,45 +14,64 @@ if not firebase_admin._apps:
         'databaseURL': 'https://creditapp-tm-default-rtdb.firebaseio.com/'
     })
 
-# Firebase DB reference
 ref = db.reference('credit_requests')
 
 st.title("📄 Credit Request Dashboard")
 
-# --- Submit New Credit Request ---
-st.header("➕ Submit a New Credit Request")
+# --- Upload Excel Template ---
+st.header("Step 1: Upload Credit Request Template")
+uploaded_excel = st.file_uploader("📂 Upload Excel Template", type=["xls", "xlsx", "xlsm"])
 
-with st.form("credit_form"):
-    ticket_number = st.text_input("Ticket Number")
-    description = st.text_area("Description")
-    credit_total = st.number_input("Credit Total ($)", step=0.01)
+if uploaded_excel:
+    # Load Excel
+    df_input = pd.read_excel(uploaded_excel)
 
-    submitted = st.form_submit_button("Submit")
+    # Schema
+    columns = [
+        'Date', 'Credit Type', 'Issue Type', 'Customer Number', 'Invoice Number',
+        'Item Number', 'QTY', 'Unit Price', 'Extended Price', 'Corrected Unit Price',
+        'Extended Correct Price', 'Credit Request Total', 'Requested By',
+        'Reason for Credit', 'Sales Rep', 'Status', 'Ticket Number'
+    ]
+    required_cols = [
+        'Credit Type', 'Issue Type', 'Customer Number', 'Invoice Number',
+        'Item Number', 'QTY', 'Unit Price', 'Extended Price',
+        'Corrected Unit Price', 'Credit Request Total', 'Requested By',
+        'Reason for Credit', 'Sales Rep'
+    ]
+
+    # Clean
+    df_filtered = df_input[required_cols].copy()
+    df_filtered['QTY'] = pd.to_numeric(df_filtered['QTY'], errors='coerce')
+    df_filtered['Unit Price'] = pd.to_numeric(df_filtered['Unit Price'], errors='coerce')
+    df_filtered['Corrected Unit Price'] = pd.to_numeric(df_filtered['Corrected Unit Price'], errors='coerce')
+    df_filtered['Extended Correct Price'] = (
+        df_filtered['Unit Price'] * df_filtered['QTY']
+        - df_filtered['Corrected Unit Price'] * df_filtered['QTY']
+    )
+    df_filtered['Date'] = pd.NaT
+    df_filtered['Status'] = ''
+    df_filtered['Ticket Number'] = ''
+
+    df_main_structure = df_filtered[columns].copy()
+
+    # --- Form UI ---
+    st.header("Step 3: Add Ticket Info")
+    with st.form("credit_form"):
+        ticket_number = st.text_input("🎫 Ticket Number", value="")
+        ticket_date = st.date_input("🗕️ Ticket Date", value=datetime.today())
+        sales_rep = st.text_input("🧑‍💼 Sales Rep", value="")
+        status_text = st.text_area("📝 Status Description", height=200)
+        submitted = st.form_submit_button("Submit Record")
 
     if submitted:
-        if ticket_number and description:
-            ref.push({
-                "ticket_number": ticket_number,
-                "description": description,
-                "credit_total": float(credit_total)
-            })
-            st.success("✅ Entry submitted to Firebase!")
-        else:
-            st.error("⚠️ Please fill out all fields before submitting.")
+        df_main_structure.at[0, 'Ticket Number'] = ticket_number
+        df_main_structure.at[0, 'Date'] = pd.to_datetime(ticket_date).date()
+        df_main_structure.at[0, 'Sales Rep'] = sales_rep
+        df_main_structure.at[0, 'Status'] = status_text
 
-# --- Display Current Records ---
-st.header("📊 Existing Credit Requests")
-
-data = ref.get()
-if data:
-    df = pd.DataFrame.from_dict(data, orient='index')
-    df.index.name = "Firebase ID"
-    st.dataframe(df)
-
-    # Download as CSV
-    csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Download as CSV", data=csv, file_name='credit_requests.csv', mime='text/csv')
-else:
-    st.info("No credit requests submitted yet.")
+        # Push to Firebase
+        ref.push(df_main_structure.iloc[0].to_dict())
+        st.success("✅ Record submitted successfully!")
 
 
