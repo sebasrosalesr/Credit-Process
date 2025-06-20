@@ -28,60 +28,33 @@ if uploaded_excel:
     # Load Excel
     df_input = pd.read_excel(uploaded_excel)
 
-    # Add missing columns expected by the app
-    for col in ['Sales Rep', 'Status', 'Date', 'Ticket Number']:
+    # Make sure required columns exist
+    required_cols = ['Credit Request Total', 'Customer Number', 'Invoice Number', 'Item Number']
+    for col in required_cols:
         if col not in df_input.columns:
-            df_input[col] = ""
+            st.error(f"❌ Column '{col}' not found in uploaded file.")
+            st.stop()
 
-    # Define final column schema
-    columns = [
-        'Date', 'Credit Type', 'Issue Type', 'Customer Number', 'Invoice Number',
-        'Item Number', 'QTY', 'Unit Price', 'Extended Price', 'Corrected Unit Price',
-        'Extended Correct Price', 'Credit Request Total', 'Requested By',
-        'Reason for Credit', 'Sales Rep', 'Status', 'Ticket Number'
-    ]
-    required_cols = [
-        'Credit Type', 'Issue Type', 'Customer Number', 'Invoice Number',
-        'Item Number', 'QTY', 'Unit Price', 'Extended Price',
-        'Corrected Unit Price', 'Credit Request Total', 'Requested By',
-        'Reason for Credit', 'Sales Rep'
-    ]
+    # Take the first row as the entry
+    df_entry = df_input.iloc[0:1].copy()
 
-    # Clean and calculate
-    df_filtered = df_input[required_cols].copy()
-    df_filtered['QTY'] = pd.to_numeric(df_filtered['QTY'], errors='coerce')
-    df_filtered['Unit Price'] = pd.to_numeric(df_filtered['Unit Price'], errors='coerce')
-    df_filtered['Corrected Unit Price'] = pd.to_numeric(df_filtered['Corrected Unit Price'], errors='coerce')
-    df_filtered['Extended Correct Price'] = (
-        df_filtered['Unit Price'] * df_filtered['QTY']
-        - df_filtered['Corrected Unit Price'] * df_filtered['QTY']
-    )
-    df_filtered['Date'] = pd.NaT
-    df_filtered['Status'] = ''
-    df_filtered['Ticket Number'] = ''
-
-    df_main_structure = df_filtered[columns].copy()
-
-    # Step 2: Add Ticket Info
+    # --- Step 2: Add Ticket Info ---
     st.header("Step 2: Add Ticket Info")
     with st.form("ticket_info_form"):
-        ticket_number = st.text_input("🎫 Ticket Number", value="")
-        ticket_date = st.date_input("📅 Ticket Date", value=datetime.today())
-        status_text = st.text_area("📜 Status Description", height=200)
         sales_rep = st.text_input("👤 Sales Rep", value="")
+        status_text = st.text_area("📜 Status Description", height=200)
         submitted = st.form_submit_button("Submit Record")
 
         if submitted:
-            df_main_structure.at[0, 'Ticket Number'] = ticket_number
-            df_main_structure.at[0, 'Date'] = pd.to_datetime(ticket_date).date()
-            df_main_structure.at[0, 'Sales Rep'] = sales_rep
-            df_main_structure.at[0, 'Status'] = status_text
+            entry = {
+                "Credit Request Total": float(df_entry.iloc[0]['Credit Request Total']),
+                "Customer Number": str(df_entry.iloc[0]['Customer Number']),
+                "Invoice Number": str(df_entry.iloc[0]['Invoice Number']),
+                "Item Number": str(df_entry.iloc[0]['Item Number']),
+                "Sales Rep": sales_rep,
+                "Status": status_text
+            }
 
-            # Push to Firebase
-            ref.push(df_main_structure.iloc[0].to_dict())
+            ref.push(entry)
             st.success("✅ Record submitted successfully!")
-
-            # Optionally show result
-            st.dataframe(df_main_structure)
-
-
+            st.json(entry)
