@@ -68,10 +68,14 @@ if uploaded_file:
             record["Status"] = status
             record["Sales Rep"] = sales_rep
 
+            # ✅ Add unique Record ID for easier lookup
+            unique_id = f"{ticket_number}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            record["Record ID"] = unique_id
+
             # Upload to Firebase
             try:
                 ref.push(record)
                 st.success("✅ Record successfully submitted to Firebase!")
-                st.write(record)
+                st.json(record)  # Show record for confirmation
             except Exception as e:
                 st.error(f"🔥 Submission failed: {e}")
