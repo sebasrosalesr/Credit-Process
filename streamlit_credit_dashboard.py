@@ -24,10 +24,6 @@ st.title("📄 Credit Request Dashboard")
 st.header("Step 1: Upload Credit Request Template")
 uploaded_excel = st.file_uploader("📂 Upload Excel Template", type=["xls", "xlsx", "xlsm"], key="upload_credit_template")
 
-# Step 1: Upload Credit Request Template
-st.header("Step 1: Upload Credit Request Template")
-uploaded_excel = st.file_uploader("📂 Upload Excel Template", type=["xls", "xlsx", "xlsm"])
-
 if uploaded_excel:
     # Load Excel
     df_input = pd.read_excel(uploaded_excel)
@@ -66,43 +62,26 @@ if uploaded_excel:
 
     df_main_structure = df_filtered[columns].copy()
 
-    # Step 3: Add Ticket Info
-    st.header("Step 3: Add Ticket Info")
-    with st.form("credit_form"):
+    # Step 2: Add Ticket Info
+    st.header("Step 2: Add Ticket Info")
+    with st.form("ticket_info_form"):
         ticket_number = st.text_input("🎫 Ticket Number", value="")
         ticket_date = st.date_input("📅 Ticket Date", value=datetime.today())
-        status_text = st.text_area("📝 Status Description", height=200)
-        sales_rep_input = st.text_input("🧑‍💼 Sales Rep", value="")
+        status_text = st.text_area("📜 Status Description", height=200)
+        sales_rep = st.text_input("👤 Sales Rep", value="")
         submitted = st.form_submit_button("Submit Record")
 
-    if submitted:
-        df_main_structure.at[0, 'Ticket Number'] = ticket_number
-        df_main_structure.at[0, 'Date'] = pd.to_datetime(ticket_date).date()
-        df_main_structure.at[0, 'Status'] = status_text
-        df_main_structure.at[0, 'Sales Rep'] = sales_rep_input
+        if submitted:
+            df_main_structure.at[0, 'Ticket Number'] = ticket_number
+            df_main_structure.at[0, 'Date'] = pd.to_datetime(ticket_date).date()
+            df_main_structure.at[0, 'Sales Rep'] = sales_rep
+            df_main_structure.at[0, 'Status'] = status_text
 
-        st.success("✅ Ticket Info Updated!")
+            # Push to Firebase
+            ref.push(df_main_structure.iloc[0].to_dict())
+            st.success("✅ Record submitted successfully!")
 
-        # Optionally show result
-        st.dataframe(df_main_structure)
-
-    # --- Form UI ---
-    st.header("Step 3: Add Ticket Info")
-    with st.form("credit_form"):
-        ticket_number = st.text_input("🎫 Ticket Number", value="")
-        ticket_date = st.date_input("🗕️ Ticket Date", value=datetime.today())
-        sales_rep = st.text_input("🧑‍💼 Sales Rep", value="")
-        status_text = st.text_area("📝 Status Description", height=200)
-        submitted = st.form_submit_button("Submit Record")
-
-    if submitted:
-        df_main_structure.at[0, 'Ticket Number'] = ticket_number
-        df_main_structure.at[0, 'Date'] = pd.to_datetime(ticket_date).date()
-        df_main_structure.at[0, 'Sales Rep'] = sales_rep
-        df_main_structure.at[0, 'Status'] = status_text
-
-        # Push to Firebase
-        ref.push(df_main_structure.iloc[0].to_dict())
-        st.success("✅ Record submitted successfully!")
+            # Optionally show result
+            st.dataframe(df_main_structure)
 
 
