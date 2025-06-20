@@ -9,7 +9,7 @@ st.write("🔍 Firebase config keys loaded:", list(st.secrets["firebase"].keys()
 
 # 🔐 Load Firebase credentials from Streamlit Secrets
 firebase_config = st.secrets["firebase"]
-cred = credentials.Certificate(dict(firebase_config))
+cred = credentials.Certificate(json.loads(json.dumps(firebase_config)))
 
 # 🔁 Initialize Firebase only once
 if not firebase_admin._apps:
