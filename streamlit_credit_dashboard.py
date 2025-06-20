@@ -21,7 +21,7 @@ st.title("📄 Credit Request Dashboard")
 
 # --- Upload Excel Template ---
 st.header("Step 1: Upload Credit Request Template")
-uploaded_excel = st.file_uploader("📂 Upload Excel Template", type=["xls", "xlsx", "xlsm"])
+uploaded_excel = st.file_uploader("📂 Upload Excel Template", type=["xls", "xlsx", "xlsm"], key="upload_credit_template")
 
 # Step 1: Upload Credit Request Template
 st.header("Step 1: Upload Credit Request Template")
