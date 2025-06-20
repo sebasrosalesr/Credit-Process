@@ -5,11 +5,11 @@ import firebase_admin
 from firebase_admin import credentials, db
 import json
 
+st.write("🔍 Firebase config keys loaded:", list(st.secrets["firebase"].keys()))
+
 # 🔐 Load Firebase credentials from Streamlit Secrets
 firebase_config = {key: st.secrets["firebase"][key] for key in st.secrets["firebase"].keys()}
 cred = credentials.Certificate(firebase_config)
-
-st.write("🔍 Firebase config keys loaded:", list(st.secrets["firebase"].keys()))
 
 # 🔁 Initialize Firebase only once
 if not firebase_admin._apps:
