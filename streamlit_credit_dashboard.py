@@ -3,8 +3,12 @@ import pandas as pd
 import firebase_admin
 from firebase_admin import credentials, db
 
-# 🔐 Load Firebase credentials from secrets and initialize Firebase
-firebase_config = dict(st.secrets["firebase"])  # Safe dict casting
+# Load Firebase credentials from secrets and initialize
+firebase_config = dict(st.secrets["firebase"])
+
+# Ensure private key is properly formatted (in case Streamlit reads it as raw)
+firebase_config["private_key"] = firebase_config["private_key"].replace("\\n", "\n")
+
 cred = credentials.Certificate(firebase_config)
 
 if not firebase_admin._apps:
@@ -12,6 +16,7 @@ if not firebase_admin._apps:
         'databaseURL': 'https://creditapp-tm-default-rtdb.firebaseio.com/'
     })
 
+# Firebase DB reference
 ref = db.reference('credit_requests')
 
 st.title("📄 Credit Request Dashboard")
