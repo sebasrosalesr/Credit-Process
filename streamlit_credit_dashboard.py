@@ -2,13 +2,14 @@ import streamlit as st
 import pandas as pd
 import firebase_admin
 from firebase_admin import credentials, db
-from datetime import datetime
-import json
 
-# --- Load Firebase credentials ---
-firebase_config = {key: st.secrets["firebase"][key] for key in st.secrets["firebase"].keys()}
+# Load and fix the private key formatting
+firebase_config = dict(st.secrets["firebase"])
+firebase_config["private_key"] = firebase_config["private_key"].replace("\\n", "\n")
+
 cred = credentials.Certificate(firebase_config)
 
+# Initialize app once
 if not firebase_admin._apps:
     firebase_admin.initialize_app(cred, {
         'databaseURL': 'https://creditapp-tm-default-rtdb.firebaseio.com/'
