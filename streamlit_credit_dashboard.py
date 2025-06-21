@@ -39,7 +39,6 @@ if uploaded_file:
             st.error(f"❌ Missing required column: {col}")
             st.stop()
 
-    # Keep only required columns
     df_filtered = df[expected_cols].copy()
 
     # Coerce numeric values
@@ -48,34 +47,45 @@ if uploaded_file:
     df_filtered['Corrected Unit Price'] = pd.to_numeric(df_filtered['Corrected Unit Price'], errors='coerce')
     df_filtered['Credit Request Total'] = pd.to_numeric(df_filtered['Credit Request Total'], errors='coerce')
 
-    # Use only the first row
+    # --- Check for Duplicates in Firebase ---
+    existing_data = ref.get()
+    existing_pairs = set()
+
+    if existing_data:
+        for record in existing_data.values():
+            invoice = record.get("Invoice Number")
+            item = record.get("Item Number")
+            if invoice and item:
+                existing_pairs.add((invoice, item))
+
+    inv = df_filtered.at[0, 'Invoice Number']
+    item = df_filtered.at[0, 'Item Number']
+
+    if (inv, item) in existing_pairs:
+        st.warning("⚠️ Duplicate entry found in Firebase for Invoice + Item Number. Record will not be submitted.")
+        st.stop()
+
+    # --- Ticket Info Form ---
     record = df_filtered.iloc[0].to_dict()
 
-    # Step 2: Add Ticket Info
     st.header("Step 2: Add Ticket Info")
     with st.form("ticket_entry"):
         ticket_number = st.text_input("🎫 Ticket Number")
-        ticket_date = st.date_input("📅 Ticket Date", value=datetime.today())
-        status = st.text_area("📝 Status / Reason")
+        ticket_date = st.date_input("🗕️ Ticket Date", value=datetime.today())
+        status = st.text_area("📜 Status / Reason")
         sales_rep = st.text_input("👤 Sales Rep")
-
         submitted = st.form_submit_button("Submit Record")
 
         if submitted:
-            # Finalize and clean record
             record["Ticket Number"] = ticket_number
             record["Date"] = ticket_date.strftime("%Y-%m-%d")
             record["Status"] = status
             record["Sales Rep"] = sales_rep
+            record["Record ID"] = f"{ticket_number}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
-            # ✅ Add unique Record ID for easier lookup
-            unique_id = f"{ticket_number}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-            record["Record ID"] = unique_id
-
-            # Upload to Firebase
             try:
                 ref.push(record)
                 st.success("✅ Record successfully submitted to Firebase!")
-                st.json(record)  # Show record for confirmation
+                st.json(record)
             except Exception as e:
                 st.error(f"🔥 Submission failed: {e}")
