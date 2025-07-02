@@ -1,4 +1,4 @@
-# The credit process 
+# The credit app 
 is built on a real-time database architecture and consists of three core components:
 
 ⸻
