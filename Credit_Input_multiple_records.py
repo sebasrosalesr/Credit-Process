@@ -18,7 +18,7 @@ if not firebase_admin._apps:
 ref = db.reference('credit_requests')
 
 # --- SQLite DB for checking duplicates locally ---
-db_path = "credits.db"  # Replace with your actual DB path
+db_path = "credits.db"
 conn = sqlite3.connect(db_path)
 
 # --- Streamlit UI ---
@@ -46,10 +46,19 @@ if uploaded_file:
 
     df_filtered = df[expected_cols].copy()
 
-    # Drop rows with missing essential identifiers
-    df_filtered.dropna(subset=['Invoice Number', 'Item Number'], inplace=True)
+    # --- Clean string/currency fields before conversion ---
+    df_filtered['QTY'] = df_filtered['QTY'].astype(str).str.extract(r'(\d+\.?\d*)').astype(float)
+    df_filtered['Unit Price'] = df_filtered['Unit Price'].astype(str).str.replace(r'[$,]', '', regex=True)
+    df_filtered['Corrected Unit Price'] = df_filtered['Corrected Unit Price'].astype(str).str.replace(r'[$,]', '', regex=True)
+    df_filtered['Credit Request Total'] = df_filtered['Credit Request Total'].astype(str).str.replace(r'[$,]', '', regex=True)
 
-    # Replace NaNs in float fields with 0 or another default value
+    # --- Convert to numeric and fill nulls ---
+    df_filtered['QTY'] = pd.to_numeric(df_filtered['QTY'], errors='coerce')
+    df_filtered['Unit Price'] = pd.to_numeric(df_filtered['Unit Price'], errors='coerce')
+    df_filtered['Corrected Unit Price'] = pd.to_numeric(df_filtered['Corrected Unit Price'], errors='coerce')
+    df_filtered['Credit Request Total'] = pd.to_numeric(df_filtered['Credit Request Total'], errors='coerce')
+
+    df_filtered.dropna(subset=['Invoice Number', 'Item Number'], inplace=True)
     df_filtered.fillna({
         'QTY': 0,
         'Unit Price': 0,
@@ -57,17 +66,11 @@ if uploaded_file:
         'Credit Request Total': 0
     }, inplace=True)
 
-    # Convert to numeric
-    df_filtered['QTY'] = pd.to_numeric(df_filtered['QTY'], errors='coerce')
-    df_filtered['Unit Price'] = pd.to_numeric(df_filtered['Unit Price'], errors='coerce')
-    df_filtered['Corrected Unit Price'] = pd.to_numeric(df_filtered['Corrected Unit Price'], errors='coerce')
-    df_filtered['Credit Request Total'] = pd.to_numeric(df_filtered['Credit Request Total'], errors='coerce')
-
-    # --- Check for Duplicates (from SQLite DB if available) ---
+    # --- Check for Duplicates ---
     try:
         existing = pd.read_sql_query("SELECT `Invoice Number`, `Item Number` FROM credits", conn)
         existing_pairs = set(zip(existing['Invoice Number'], existing['Item Number']))
-    except Exception as e:
+    except Exception:
         existing_pairs = set()
 
     # --- Step 2: Add Ticket Info ---
