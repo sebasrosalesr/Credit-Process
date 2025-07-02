@@ -46,7 +46,18 @@ if uploaded_file:
 
     df_filtered = df[expected_cols].copy()
 
-    # Coerce numeric values
+    # Drop rows with missing essential identifiers
+    df_filtered.dropna(subset=['Invoice Number', 'Item Number'], inplace=True)
+
+    # Replace NaNs in float fields with 0 or another default value
+    df_filtered.fillna({
+        'QTY': 0,
+        'Unit Price': 0,
+        'Corrected Unit Price': 0,
+        'Credit Request Total': 0
+    }, inplace=True)
+
+    # Convert to numeric
     df_filtered['QTY'] = pd.to_numeric(df_filtered['QTY'], errors='coerce')
     df_filtered['Unit Price'] = pd.to_numeric(df_filtered['Unit Price'], errors='coerce')
     df_filtered['Corrected Unit Price'] = pd.to_numeric(df_filtered['Corrected Unit Price'], errors='coerce')
