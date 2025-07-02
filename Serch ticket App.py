@@ -17,7 +17,7 @@ ref = db.reference('credit_requests')
 
 # --- Streamlit UI ---
 st.title("🔎 Ticket Search - Credit Requests")
-st.markdown("Search any ticket by its number to view full submission.")
+st.markdown("Search any ticket by its number to view all related submissions.")
 
 # --- Ticket Search Form ---
 st.header("Search by Ticket Number")
@@ -27,17 +27,19 @@ search_button = st.button("Search")
 if search_button and ticket_query:
     try:
         data = ref.get()
-        match_found = False
+        matches = []
 
         if data:
             for key, record in data.items():
                 if str(record.get("Ticket Number", "")) == ticket_query:
-                    st.success(f"✅ Match Found: Record ID = {key}")
-                    st.json(record)
-                    match_found = True
-                    break
+                    record["Record ID"] = key
+                    matches.append(record)
 
-        if not match_found:
+        if matches:
+            st.success(f"✅ {len(matches)} record(s) found for Ticket Number: {ticket_query}")
+            for record in matches:
+                st.json(record)
+        else:
             st.warning("❌ No record found with that ticket number.")
 
     except Exception as e:
