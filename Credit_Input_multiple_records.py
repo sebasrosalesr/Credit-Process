@@ -65,7 +65,37 @@ if uploaded_file:
         ticket_number = st.text_input("🎫 Ticket Number")
         ticket_date = st.date_input("📅 Ticket Date", value=datetime.today())
         status = st.text_area("📜 Status / Reason")
-        sales_rep = st.text_input("👤 Sales Rep")
+
+        sales_rep_options = sorted([
+            'HOUSE', 'SA/AR', 'nan', 'AR/KE', 'BPARKER', 'RFRIEDMAN', 'AROSENFELD', 'DR/TU',
+            'JK/AR', 'AR/MG', 'CHRISWYLER', 'JGOULDING', 'AL/NL', 'MALCARAZ', 'TJUNIK',
+            'ALANDAU', 'NYS', 'EB/MC/MF/SM', 'EB/MC/MF/SM/SP', 'ELIB', 'MF/SG', 'TRENNERT',
+            'SA/MG', 'WNISCHT', 'AR/BG', 'RMAIRS', 'BWERCZBERGER', 'AL/AR/BG', 'EB', 'JEARL',
+            'TWHITZEL', 'JSWEENEY', 'JMCSHANNOCK', 'DDFILIPPO', 'CTHOMAS', 'NELLMAN',
+            'BMONCZYK', 'SADAMS', 'DW/EB/MC/MF/SM', 'DWEBMCMFSMSP', 'DW/EB/MF/MC/SP/',
+            'JC/JT', 'RF/AR', 'RDORAN', 'SMARCIANO', 'JCROSGROVE', 'MC/MF', 'MC/SM',
+            'BOBGOLD', 'ELI/BOB', 'MFINE', 'CFAULKNER', 'NLANDAU', 'MF', 'ALLMED',
+            'CW/SM', 'SUB02', 'AOBEZIL', 'EB/MC/MF', 'JTIPTON', 'AR/JS', 'DW/MF',
+            'BRANDALL', 'KM/RM', 'MDESIMONE', 'MEYER', 'MC', 'CHI/NL', 'BBINDEL',
+            'MWEENIG', 'NMERRITT', 'DW', 'SDECKERT', 'MC/MF/SM', 'ELIB/MC/MF/SIMI',
+            'DW/MF/SM', 'EB/SG', 'EB/MC/MF/SG/SM', 'NBITTERMAN', 'SM/MC/EB/MF/AL',
+            'MLANDAU', 'EB/MF/MC/SP/SM', 'JMILLER', 'ELIB/MC', 'JGOLESTANI', 'MF/SM',
+            'JSOLOMON', 'AL/NL/TJ', 'MVZ', 'SIMI', 'CWILLIAMS', 'DW/EB/MC/MF/SIM',
+            'TPETERS', 'BP/NL', 'DW/SIMI/MF', 'JDUCKWORTH', 'EB/MC', 'DWEINBERGER',
+            'AL/MF', 'SIMI/MF', 'DD/AS', 'MAMCGOWEN', 'AROEBUCK', 'JM/BB', 'JGRANT',
+            'ALEBMCMFSMSP', 'AROTH', 'SIMI/MC/MF', 'JSHALLMAN', 'DROPA', 'ASPEAR',
+            'JS/DW', 'JE/JT', 'AL/AR', 'SIMI/MC', 'ELIB/SIMI', 'JM/MA', 'RA/KE',
+            'MC/MF/SG', 'JC/JE', 'EB/SM', 'MDELGADO', 'BW/CW', 'ELI/SHAWEL',
+            'BROOSEVELT', 'DYONA', 'MVANZELST', 'ROB', 'ELI/BOB/MF', 'MC/MF/SG/SM',
+            'AL/MC', 'SIMI/MC/ELIB', 'TJ/NB', 'MC/SG', 'MF/SP/RF', 'AL/JG', 'MEDSPARK',
+            'JM/AS', 'CRAMIREZ', 'CF/AR', 'SM', 'TJ/NL', 'AO/MA', 'MCHASE',
+            'KSCHWIETERMAN', 'ELI BERKOVICH', 'CW/TJ', 'MW/TJ', 'KEMORY', 'RA', 'BG',
+            'PECK', 'EB/NB/C/F/M/P', 'CROBINSON', 'MF/NL', 'SG', 'SD/SM',
+            'EBMCMFSMSPBW', 'BB/MDS', 'BFR', 'TJ/SA', 'NB/JE', 'BOB/MF/SIMI/MC',
+            'DW/MC/MF/SM', 'CLANDAU/CWYLER', 'ELIB/MC/MF/RG/S'
+        ])
+        sales_rep = st.selectbox("👤 Sales Rep", options=sales_rep_options)
+
         submitted = st.form_submit_button("Submit Record")
 
         if submitted:
