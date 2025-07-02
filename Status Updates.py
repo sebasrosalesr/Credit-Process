@@ -17,27 +17,17 @@ if not firebase_admin._apps:
 ref = db.reference('credit_requests')
 
 # --- Streamlit UI ---
-st.title("📋 Update Credit Request Status")
+st.title("📋 Update Credit Request Status by Ticket Number")
 
-st.header("Step 1: Identify Entry")
-invoice_no = st.text_input("📄 Invoice Number")
-item_no = st.text_input("🧾 Item Number")
-ticket_no = st.text_input("🎫 Ticket Number (Optional)")
+st.header("Step 1: Enter Ticket Number")
+ticket_no = st.text_input("🎫 Ticket Number")
 
-if invoice_no and item_no:
-    # Search for matching record
+if ticket_no:
     data = ref.get()
-    match_key = None
-    match_record = None
-    for key, val in data.items():
-        if str(val.get("Invoice Number")) == invoice_no and str(val.get("Item Number")) == item_no:
-            if not ticket_no or str(val.get("Ticket Number")) == ticket_no:
-                match_key = key
-                match_record = val
-                break
+    matches = {key: val for key, val in data.items() if str(val.get("Ticket Number")) == ticket_no}
 
-    if match_record:
-        st.success("✅ Match found! You can now update the status.")
+    if matches:
+        st.success(f"✅ Found {len(matches)} record(s) under Ticket Number: {ticket_no}")
 
         st.header("Step 2: Update Status")
         status_option = st.selectbox("🔄 Select New Status", [
@@ -50,12 +40,13 @@ if invoice_no and item_no:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             status_entry = f"[{timestamp}] {status_option}: {status_description}"
 
-            # Append to existing status or initialize
-            current_status = match_record.get("Status", "")
-            new_status = current_status + "\n" + status_entry if current_status else status_entry
+            count = 0
+            for key, val in matches.items():
+                current_status = val.get("Status", "")
+                new_status = current_status + "\n" + status_entry if current_status else status_entry
+                ref.child(key).update({"Status": new_status})
+                count += 1
 
-            # Update record
-            ref.child(match_key).update({"Status": new_status})
-            st.success("✅ Status updated successfully!")
+            st.success(f"✅ Status updated for {count} record(s)!")
     else:
-        st.warning("⚠️ No matching record found. Check the Invoice and Item Number.")
+        st.warning("⚠️ No records found for that Ticket Number.")
