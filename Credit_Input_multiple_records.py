@@ -45,6 +45,12 @@ if uploaded_file:
 
     df_filtered = df[expected_cols].copy()
 
+    # Add Sales Rep column if not present
+    if "Sales Rep" not in df.columns:
+        df_filtered["Sales Rep"] = None
+    else:
+        df_filtered["Sales Rep"] = df["Sales Rep"]
+
     # --- Clean numeric fields ---
     for field in ['QTY', 'Unit Price', 'Corrected Unit Price', 'Credit Request Total']:
         df_filtered[field] = df_filtered[field].astype(str).str.replace(r'[$,]', '', regex=True)
@@ -99,7 +105,7 @@ if uploaded_file:
             'EBMCMFSMSPBW', 'BB/MDS', 'BFR', 'TJ/SA', 'NB/JE', 'BOB/MF/SIMI/MC',
             'DW/MC/MF/SM', 'CLANDAU/CWYLER', 'ELIB/MC/MF/RG/S'
         ])
-        sales_rep = st.selectbox("👤 Sales Rep", options=sales_rep_options)
+        sales_rep_input = st.selectbox("👤 Sales Rep", options=sales_rep_options)
 
         submitted = st.form_submit_button("Submit Record")
 
@@ -117,8 +123,11 @@ if uploaded_file:
                 record["Ticket Number"] = ticket_number
                 record["Date"] = ticket_date.strftime("%Y-%m-%d")
                 record["Status"] = status
-                record["Sales Rep"] = sales_rep
+                record["Sales Rep"] = row.get("Sales Rep") or sales_rep_input
                 record["Record ID"] = f"{ticket_number}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{count}"
+
+                # Ensure all NaNs are replaced with None
+                record = {k: (None if pd.isna(v) else v) for k, v in record.items()}
 
                 try:
                     ref.push(record)
