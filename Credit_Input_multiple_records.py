@@ -56,8 +56,16 @@ if uploaded_file:
         df_filtered[field] = df_filtered[field].astype(str).str.replace(r'[$,]', '', regex=True)
         df_filtered[field] = pd.to_numeric(df_filtered[field], errors='coerce')
 
-    df_filtered.dropna(subset=['Invoice Number', 'Item Number'], inplace=True)
-    df_filtered.fillna({field: 0 for field in ['QTY', 'Unit Price', 'Corrected Unit Price', 'Credit Request Total']}, inplace=True)
+    # --- Keep valid rows ---
+    df_filtered = df_filtered[
+        (df_filtered['Issue Type'] == 'Tax') |
+        (df_filtered['Invoice Number'].notna() & df_filtered['Item Number'].notna())
+    ]
+
+    # Fill NaNs for numeric fields
+    df_filtered.fillna({
+        'QTY': 0, 'Unit Price': 0, 'Corrected Unit Price': 0, 'Credit Request Total': 0
+    }, inplace=True)
 
     # --- Fetch existing Firebase entries for deduplication ---
     try:
@@ -65,7 +73,9 @@ if uploaded_file:
         existing_pairs = set()
         if existing_data:
             for rec in existing_data.values():
-                existing_pairs.add((rec.get('Invoice Number'), str(rec.get('Item Number'))))
+                inv = rec.get('Invoice Number')
+                item = str(rec.get('Item Number')) if rec.get('Item Number') is not None else None
+                existing_pairs.add((inv, item))
     except Exception as e:
         st.error(f"❌ Error reading from Firebase: {e}")
         existing_pairs = set()
@@ -113,9 +123,9 @@ if uploaded_file:
             count = 0
             for _, row in df_filtered.iterrows():
                 inv = str(row['Invoice Number'])
-                item = str(row['Item Number'])
+                item = str(row['Item Number']) if row['Issue Type'] != 'Tax' else None
 
-                if (inv, item) in existing_pairs:
+                if row['Issue Type'] != 'Tax' and (inv, item) in existing_pairs:
                     st.warning(f"⚠️ Skipped duplicate: Invoice {inv}, Item {item}")
                     continue
 
@@ -126,7 +136,7 @@ if uploaded_file:
                 record["Sales Rep"] = row.get("Sales Rep") or sales_rep_input
                 record["Record ID"] = f"{ticket_number}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{count}"
 
-                # Ensure all NaNs are replaced with None
+                # Clean nulls
                 record = {k: (None if pd.isna(v) else v) for k, v in record.items()}
 
                 try:
