@@ -1,52 +1,61 @@
 import streamlit as st
 import pandas as pd
 
-st.title("📄 Credit Request Matcher")
+st.set_page_config(page_title="Credit Request vs Billing Check", layout="wide")
 
-st.markdown("Upload the *Billing Master* and the *New Credit Form* files to find matching Invoice + Item pairs.")
+st.title("🔍 Credit Request vs Billing Check")
 
-# Step 1: Upload files
-billing_file = st.file_uploader("🧾 Upload Billing Master Excel", type=["xlsx", "xlsm"])
-credit_file = st.file_uploader("📝 Upload New Credit Form Excel", type=["xlsx", "xlsm"])
+st.header("Step 1: Upload Files")
 
-if billing_file and credit_file:
-    # Step 2: Load both files
-    df_billing = pd.read_excel(billing_file, engine="openpyxl")
-    df_credit = pd.read_excel(credit_file, engine="openpyxl")
+# Upload Credit Form
+st.subheader("📤 Upload Credit Request Template")
+credit_file = st.file_uploader("Drag and drop the Credit Form Excel here", type=["xlsx", "xlsm", "xls"])
 
-    # Step 3: Standardize column names
-    df_billing.rename(columns={
-        'Doc No': 'Invoice Number',
-        'Item No.': 'Item Number'
-    }, inplace=True)
+# Upload Billing Master
+st.subheader("📥 Upload Billing Master Excel")
+billing_file = st.file_uploader("Drag and drop the Billing Master Excel here", type=["xlsx", "xlsm", "xls"])
 
-    # Step 4: Drop NaNs where comparison can't happen
-    df_credit_clean = df_credit.dropna(subset=['Invoice Number', 'Item Number']).copy()
+# Process if both files are uploaded
+if credit_file and billing_file:
+    try:
+        # Load files
+        df_credit = pd.read_excel(credit_file, engine="openpyxl")
+        df_billing = pd.read_excel(billing_file, engine="openpyxl")
 
-    # Step 5: Convert both keys to strings
-    df_credit_clean['Invoice Number'] = df_credit_clean['Invoice Number'].astype(str).str.strip()
-    df_credit_clean['Item Number'] = df_credit_clean['Item Number'].astype(str).str.strip()
-    df_billing['Invoice Number'] = df_billing['Invoice Number'].astype(str).str.strip()
-    df_billing['Item Number'] = df_billing['Item Number'].astype(str).str.strip()
+        # Rename billing columns for matching
+        df_billing.rename(columns={
+            'Doc No': 'Invoice Number',
+            'Item No.': 'Item Number'
+        }, inplace=True)
 
-    # Step 6: Create matching keys
-    credit_keys = set(zip(df_credit_clean['Invoice Number'], df_credit_clean['Item Number']))
-    billing_keys = set(zip(df_billing['Invoice Number'], df_billing['Item Number']))
-    common_pairs = credit_keys & billing_keys
+        # Drop NaNs from Credit Form where matching isn't possible
+        df_credit_clean = df_credit.dropna(subset=['Invoice Number', 'Item Number']).copy()
 
-    # Step 7: Filter matches
-    df_matches = df_credit_clean[
-        df_credit_clean[['Invoice Number', 'Item Number']].apply(tuple, axis=1).isin(common_pairs)
-    ]
+        # Convert keys to strings and strip
+        df_credit_clean['Invoice Number'] = df_credit_clean['Invoice Number'].astype(str).str.strip()
+        df_credit_clean['Item Number'] = df_credit_clean['Item Number'].astype(str).str.strip()
+        df_billing['Invoice Number'] = df_billing['Invoice Number'].astype(str).str.strip()
+        df_billing['Item Number'] = df_billing['Item Number'].astype(str).str.strip()
 
-    st.success(f"✅ Found {len(df_matches)} matching records.")
+        # Create key pairs
+        credit_keys = set(zip(df_credit_clean['Invoice Number'], df_credit_clean['Item Number']))
+        billing_keys = set(zip(df_billing['Invoice Number'], df_billing['Item Number']))
+        common_pairs = credit_keys & billing_keys
 
-    # Step 8: Show and optionally export
-    st.dataframe(df_matches)
+        # Filter matches
+        df_matches = df_credit_clean[
+            df_credit_clean[['Invoice Number', 'Item Number']].apply(tuple, axis=1).isin(common_pairs)
+        ]
 
-    # Optional download
-    csv = df_matches.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Download Matches as CSV", csv, "matched_records.csv", "text/csv")
+        st.success(f"✅ Found {len(df_matches)} matching records.")
+        st.dataframe(df_matches)
+
+        # Downloadable CSV
+        csv = df_matches.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Download Matches as CSV", csv, "matched_records.csv", "text/csv")
+
+    except Exception as e:
+        st.error(f"❌ Error processing files: {e}")
 
 else:
     st.info("⬆️ Please upload both files to begin.")
