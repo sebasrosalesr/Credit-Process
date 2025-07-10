@@ -1,7 +1,9 @@
 import streamlit as st
 import pandas as pd
+import os
+import io
 
-# --- Final Standard Schema ---
+# --- Standard output schema ---
 standard_columns = [
     'Date', 'Credit Type', 'Issue Type', 'Customer Number', 'Invoice Number',
     'Item Number', 'QTY', 'Unit Price', 'Extended Price', 'Corrected Unit Price',
@@ -9,7 +11,7 @@ standard_columns = [
     'Reason for Credit', 'Status', 'Ticket Number'
 ]
 
-# --- Macro File Mapping ---
+# --- Format A: Macro File Mapping ---
 macro_mapping = {
     'Date': 'Req Date',
     'Credit Type': 'CRType',
@@ -29,8 +31,8 @@ macro_mapping = {
     'Ticket Number': None
 }
 
-# --- Format B Mapping ---
-format_b_mapping = {
+# --- Format B: Pump Orders Mapping ---
+pump_mapping = {
     'Date': 'DOCDATE',
     'Credit Type': None,
     'Issue Type': None,
@@ -42,64 +44,75 @@ format_b_mapping = {
     'Extended Price': 'XTNDPRCE',
     'Corrected Unit Price': None,
     'Extended Correct Price': None,
-    'Credit Request Total': 'XTNDPRCE',
+    'Credit Request Total': None,
     'Requested By': None,
     'Reason for Credit': None,
     'Status': None,
     'Ticket Number': None
 }
 
-# --- Identify File Types ---
-def is_macro_file(df):
-    return {'Req Date', 'Cust ID', 'Total Credit Amt'}.issubset(df.columns)
+# --- Convert with mapping ---
+def convert_file(df, mapping):
+    df_out = pd.DataFrame(columns=standard_columns)
+    for out_col in standard_columns:
+        source_col = mapping.get(out_col)
+        if source_col and source_col in df.columns:
+            df_out[out_col] = df[source_col]
+        else:
+            df_out[out_col] = None
+    return df_out
 
-def is_format_b_file(df):
-    return {'DOCDATE', 'CUSTNMBR', 'SOPNUMBE', 'ITEMNMBR', 'UNITPRCE'}.issubset(df.columns)
+# --- Filter Pump Orders with zero price ---
+def filter_pump(df):
+    return df[df['UNITPRCE'] != 0]
 
-# --- Convert with Mapping ---
-def convert_with_mapping(df, mapping, skip_zero_price=False):
-    if skip_zero_price and 'UNITPRCE' in df.columns:
-        df = df[df['UNITPRCE'].fillna(0) > 0]
+# --- Excel Export Function ---
+def convert_df_to_excel(df):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False)
+    return output.getvalue()
 
-    output_df = pd.DataFrame(columns=standard_columns)
-    for std_col, source_col in mapping.items():
-        output_df[std_col] = df[source_col] if source_col in df.columns else None
-    return output_df
+# --- Streamlit App ---
+st.title("📄 Credit Request Template Converter")
 
-# --- Streamlit App UI ---
-st.title("🧾 Excel Credit Request Converter")
+uploaded_files = st.file_uploader("Upload Excel files", type=['xlsx', 'xls', 'xlsm'], accept_multiple_files=True)
 
-uploaded_files = st.file_uploader("📂 Upload Excel Files", type=["xls", "xlsx", "xlsm"], accept_multiple_files=True)
+converted_frames = []
 
 if uploaded_files:
-    converted_dataframes = []
+    for uploaded_file in uploaded_files:
+        df = pd.read_excel(uploaded_file)
+        st.markdown(f"✅ **Loaded:** `{uploaded_file.name}` | Rows: {df.shape[0]} | Columns: {df.shape[1]}")
 
-    for file in uploaded_files:
-        df = pd.read_excel(file)
-        st.success(f"✅ Loaded: {file.name} | Rows: {df.shape[0]}")
-        st.caption("📋 Columns: " + ", ".join(df.columns.astype(str)))
+        # Format detection
+        cols = set(df.columns)
 
-        if is_macro_file(df):
-            st.info("🧠 Detected: Macro File — Applying Mapping")
-            converted_dataframes.append(convert_with_mapping(df, macro_mapping))
+        if 'Req Date' in cols and 'Cust ID' in cols and 'Total Credit Amt' in cols:
+            st.info("📎 Format Detected: Macro File")
+            converted = convert_file(df, macro_mapping)
+            converted['Source File'] = uploaded_file.name
+            converted['Format'] = 'Macro File'
+            converted_frames.append(converted)
 
-        elif is_format_b_file(df):
-            st.info("🔧 Detected: Format B — Filtering Unit Price > 0")
-            converted_dataframes.append(convert_with_mapping(df, format_b_mapping, skip_zero_price=True))
+        elif 'CUSTNMBR' in cols and 'ITEMNMBR' in cols and 'UNITPRCE' in cols:
+            st.info("🔧 Format Detected: Format B")
+            df = filter_pump(df)
+            converted = convert_file(df, pump_mapping)
+            converted['Source File'] = uploaded_file.name
+            converted['Format'] = 'Pump Order'
+            converted_frames.append(converted)
 
         else:
-            st.warning("⚠️ Format not recognized — Skipping")
+            st.warning("⚠️ Unrecognized format — skipped")
 
-    if converted_dataframes:
-        final_df = pd.concat(converted_dataframes, ignore_index=True)
+    # Combine all
+    if converted_frames:
+        final_df = pd.concat(converted_frames, ignore_index=True)
         st.success(f"✅ Combined Rows: {final_df.shape[0]}")
-        st.dataframe(final_df.head(50))
+        st.dataframe(final_df)
 
-        # Download button
-        @st.cache_data
-        def convert_df_to_excel(df):
-            return df.to_excel(index=False, engine='openpyxl')
-
+        # Download
         excel_bytes = convert_df_to_excel(final_df)
         st.download_button(
             label="📥 Download Combined Excel",
@@ -107,3 +120,5 @@ if uploaded_files:
             file_name="Converted_Credit_Requests.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+    else:
+        st.error("❌ No valid files to convert.")
