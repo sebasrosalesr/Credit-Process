@@ -86,6 +86,7 @@ if uploaded_file:
         ticket_number = st.text_input("🎫 Ticket Number")
         ticket_date = st.date_input("📅 Ticket Date", value=datetime.today())
         status = st.text_area("📜 Status / Reason")
+        credit_type_input = st.selectbox("🗂️ Type", options=["RTNCM", "RTNINT"])
 
         sales_rep_options = sorted([
             'HOUSE', 'SA/AR', 'nan', 'AR/KE', 'BPARKER', 'RFRIEDMAN', 'AROSENFELD', 'DR/TU',
@@ -134,6 +135,7 @@ if uploaded_file:
                 record["Date"] = ticket_date.strftime("%Y-%m-%d")
                 record["Status"] = status
                 record["Sales Rep"] = row.get("Sales Rep") or sales_rep_input
+                record["Type"] = credit_type_input
                 record["Record ID"] = f"{ticket_number}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{count}"
 
                 # Clean nulls
