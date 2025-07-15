@@ -17,30 +17,45 @@ if not firebase_admin._apps:
 ref = db.reference('credit_requests')
 
 # --- Streamlit UI ---
-st.title("📋 Update Credit Request Status by Ticket Number")
+st.title("📋 Update Credit Request Status")
 
-st.header("Step 1: Enter Ticket Number")
-ticket_no = st.text_input("🎫 Ticket Number")
+st.header("Step 1: Enter Any of the Following")
+search_input = st.text_input("🔎 Ticket Number, Invoice Number, Item Number, or Invoice+Item (e.g. 123456|ABC789)")
 
-if ticket_no:
+if search_input:
     data = ref.get()
-    ticket_no = ticket_no.strip().lower()
+    search_input = search_input.strip().lower()
+    matches = {}
+    source = ""
 
-    # First: try exact match in "Ticket Number"
-    matches = {
-        key: val for key, val in data.items()
-        if str(val.get("Ticket Number", "")).strip().lower() == ticket_no
-    }
+    for key, record in data.items():
+        ticket = str(record.get("Ticket Number", "")).strip().lower()
+        invoice = str(record.get("Invoice Number", "")).strip().lower()
+        item = str(record.get("Item Number", "")).strip().lower()
+        status = str(record.get("Status", "")).strip().lower()
 
-    # Fallback: if no match in "Ticket Number", search "Status" for the ticket as a substring
-    if not matches:
-        matches = {
-            key: val for key, val in data.items()
-            if ticket_no in str(val.get("Status", "")).lower()
-        }
-        source = "Status field"
-    else:
-        source = "Ticket Number column"
+        # Match by Ticket Number
+        if search_input == ticket:
+            matches[key] = record
+            source = "Ticket Number"
+        # Match by Invoice Number
+        elif search_input == invoice:
+            matches[key] = record
+            source = "Invoice Number"
+        # Match by Item Number
+        elif search_input == item:
+            matches[key] = record
+            source = "Item Number"
+        # Match by Invoice + Item pair (format: invoice|item)
+        elif "|" in search_input:
+            parts = search_input.split("|")
+            if len(parts) == 2 and invoice == parts[0].strip() and item == parts[1].strip():
+                matches[key] = record
+                source = "Invoice + Item Pair"
+        # Fallback: Search inside Status text
+        elif search_input in status:
+            matches[key] = record
+            source = "Status field (partial match)"
 
     if matches:
         st.success(f"✅ Found {len(matches)} record(s) using {source}.")
@@ -65,4 +80,4 @@ if ticket_no:
 
             st.success(f"✅ Status updated for {count} record(s)!")
     else:
-        st.warning("⚠️ No records found in Ticket Number or Status fields.")
+        st.warning("⚠️ No records found using any of the search methods.")
