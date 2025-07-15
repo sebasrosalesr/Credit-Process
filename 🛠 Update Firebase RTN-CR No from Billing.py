@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
-import firebase_admin
 from firebase_admin import credentials, db
+import firebase_admin
+from datetime import datetime
 
 # --- Firebase Initialization ---
 firebase_config = dict(st.secrets["firebase"])
@@ -16,67 +17,63 @@ if not firebase_admin._apps:
 ref = db.reference('credit_requests')
 
 # --- Streamlit UI ---
-st.set_page_config(page_title="🛠 Update Firebase RTN/CR No from Billing", layout="wide")
-st.title("📥 Update Firebase Records Using Billing Master")
-st.subheader("Upload the Billing Master Excel File")
+st.title("🔄 RTN/CR No. Updater")
+st.write("Upload the Billing Master Excel to update missing RTN/CR Numbers in the Firebase database.")
 
-billing_file = st.file_uploader("Drag and drop the Billing Master Excel here", type=["xlsx", "xlsm", "xls"])
+# Upload Billing Master
+billing_file = st.file_uploader("📥 Upload Billing Master Excel", type=["xlsx", "xlsm", "xls"])
 
 if billing_file:
     try:
-        # Load Billing Master
         df_billing = pd.read_excel(billing_file, engine="openpyxl")
 
-        # Rename columns to match Firebase format
+        # Standardize key columns
         df_billing.rename(columns={
             'Doc No': 'Invoice Number',
             'Item No.': 'Item Number'
         }, inplace=True)
 
-        # Clean and keep only necessary rows
+        # Convert keys to string and clean
         df_billing['Invoice Number'] = df_billing['Invoice Number'].astype(str).str.strip()
         df_billing['Item Number'] = df_billing['Item Number'].astype(str).str.strip()
-        df_billing_clean = df_billing.dropna(subset=['RTN/CR No'])
 
-        st.success(f"✅ Loaded {len(df_billing_clean)} billing records with RTN/CR No.")
-        st.dataframe(df_billing_clean[['Invoice Number', 'Item Number', 'RTN/CR No']])
+        # Build lookup from billing: {(inv, item): rtn}
+        billing_lookup = {
+            (row['Invoice Number'], row['Item Number']): row.get('RTN/CR No.')  # Keep dot here
+            for _, row in df_billing.iterrows()
+            if pd.notna(row.get('RTN/CR No.'))
+        }
 
-        # --- Firebase Update ---
-        if st.button("📤 Update Firebase Records with RTN/CR No"):
-            firebase_data = ref.get()
-            updated = 0
-            skipped = []
-            unmatched = []
+        # Load Firebase
+        data = ref.get()
+        updated = 0
+        skipped = []
+        not_found = []
 
-            for idx, row in df_billing_clean.iterrows():
-                inv = row['Invoice Number']
-                item = row['Item Number']
-                rtn = row['RTN/CR No']
-                matched = False
+        for key, record in data.items():
+            inv = str(record.get("Invoice Number")).strip()
+            item = str(record.get("Item Number")).strip()
+            pair = (inv, item)
 
-                for key, record in firebase_data.items():
-                    if str(record.get("Invoice Number")) == inv and str(record.get("Item Number")) == item:
-                        matched = True
-                        existing_rtn = record.get("RTN/CR No")
-                        if not existing_rtn:
-                            ref.child(key).update({"RTN/CR No": rtn})
-                            updated += 1
-                        else:
-                            skipped.append((inv, item, existing_rtn))
-                        break
+            # Check for match
+            if pair in billing_lookup:
+                rtn = billing_lookup[pair]
+                existing_rtn = record.get("RTN/CR No")
 
-                if not matched:
-                    unmatched.append((inv, item, rtn))
+                if not existing_rtn:  # Only update if it's missing
+                    ref.child(key).update({"RTN/CR No": rtn})
+                    updated += 1
+                else:
+                    skipped.append((inv, item, existing_rtn))
+            else:
+                not_found.append(pair)
 
-            st.success(f"✅ RTN/CR No added to {updated} Firebase record(s).")
-            if skipped:
-                st.warning(f"⚠️ Skipped {len(skipped)} records (already had RTN/CR No).")
-                st.dataframe(pd.DataFrame(skipped, columns=['Invoice Number', 'Item Number', 'Existing RTN/CR No']))
-            if unmatched:
-                st.error(f"❌ {len(unmatched)} records not found in Firebase.")
-                st.dataframe(pd.DataFrame(unmatched, columns=['Invoice Number', 'Item Number', 'RTN/CR No']))
+        # --- Results ---
+        st.success(f"✅ {updated} records updated with new RTN/CR No values.")
+        if skipped:
+            st.info(f"ℹ️ Skipped {len(skipped)} records (already had RTN/CR No).")
+        if not_found:
+            st.warning(f"⚠️ {len(not_found)} records in Firebase did not match the Billing file.")
 
     except Exception as e:
-        st.error(f"❌ Error reading or updating data: {e}")
-else:
-    st.info("⬆️ Please upload the Billing Master Excel file to begin.")
+        st.error(f"❌ Error processing Billing Master file: {e}")
