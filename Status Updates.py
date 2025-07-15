@@ -17,10 +17,11 @@ if not firebase_admin._apps:
 ref = db.reference('credit_requests')
 
 # --- Streamlit UI ---
-st.title("📋 Update Credit Request Status")
+st.set_page_config(page_title="Bulk Status Update", layout="wide")
+st.title("📋 Bulk Update Credit Request Status")
 
-st.header("Step 1: Enter Any of the Following")
-search_input = st.text_input("🔎 Ticket Number, Invoice Number, Item Number, or Invoice+Item (e.g. 123456|ABC789)")
+st.header("Step 1: Search Records")
+search_input = st.text_input("🔍 Ticket Number, Invoice Number, Item Number, or Invoice|Item pair")
 
 if search_input:
     data = ref.get()
@@ -34,25 +35,20 @@ if search_input:
         item = str(record.get("Item Number", "")).strip().lower()
         status = str(record.get("Status", "")).strip().lower()
 
-        # Match by Ticket Number
         if search_input == ticket:
             matches[key] = record
             source = "Ticket Number"
-        # Match by Invoice Number
         elif search_input == invoice:
             matches[key] = record
             source = "Invoice Number"
-        # Match by Item Number
         elif search_input == item:
             matches[key] = record
             source = "Item Number"
-        # Match by Invoice + Item pair (format: invoice|item)
         elif "|" in search_input:
             parts = search_input.split("|")
             if len(parts) == 2 and invoice == parts[0].strip() and item == parts[1].strip():
                 matches[key] = record
                 source = "Invoice + Item Pair"
-        # Fallback: Search inside Status text
         elif search_input in status:
             matches[key] = record
             source = "Status field (partial match)"
@@ -60,24 +56,30 @@ if search_input:
     if matches:
         st.success(f"✅ Found {len(matches)} record(s) using {source}.")
 
-        st.header("Step 2: Update Status")
-        status_option = st.selectbox("🔄 Select New Status", [
+        # Optional: display results before updating
+        df_preview = pd.DataFrame.from_dict(matches, orient="index")
+        st.dataframe(df_preview)
+
+        st.header("Step 2: Apply Bulk Status Update")
+        status_option = st.selectbox("🔄 New Status", [
             "Update", "Credit No & Reason", "In Process", "Submitted to Billing"
         ])
         status_description = st.text_area("📝 Status Description")
-        submit_update = st.button("📤 Submit Status Update")
 
-        if submit_update and status_description:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            status_entry = f"[{timestamp}] {status_option}: {status_description}"
+        if st.button("📤 Apply Status Update to All"):
+            if not status_description.strip():
+                st.warning("⚠️ Please enter a status description.")
+            else:
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                status_entry = f"[{timestamp}] {status_option}: {status_description}"
 
-            count = 0
-            for key, val in matches.items():
-                current_status = val.get("Status", "")
-                new_status = current_status + "\n" + status_entry if current_status else status_entry
-                ref.child(key).update({"Status": new_status})
-                count += 1
+                count = 0
+                for key, val in matches.items():
+                    current_status = val.get("Status", "")
+                    new_status = current_status + "\n" + status_entry if current_status else status_entry
+                    ref.child(key).update({"Status": new_status})
+                    count += 1
 
-            st.success(f"✅ Status updated for {count} record(s)!")
+                st.success(f"✅ Updated {count} record(s) with new status.")
     else:
-        st.warning("⚠️ No records found using any of the search methods.")
+        st.warning("⚠️ No records matched your search input.")
