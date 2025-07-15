@@ -52,9 +52,17 @@ if uploaded_file:
         df_filtered["Sales Rep"] = df["Sales Rep"]
 
     # --- Clean numeric fields ---
-    for field in ['QTY', 'Unit Price', 'Corrected Unit Price', 'Credit Request Total']:
+    for field in ['Unit Price', 'Corrected Unit Price', 'Credit Request Total']:
         df_filtered[field] = df_filtered[field].astype(str).str.replace(r'[$,]', '', regex=True)
         df_filtered[field] = pd.to_numeric(df_filtered[field], errors='coerce')
+
+    df_filtered['QTY'] = (
+       df_filtered['QTY']
+       .astype(str)
+       .str.strip()
+       .str.extract(r'^(\d+(?:\.\d+)?)')[0]
+       .astype(float)
+    )
 
     # --- Keep valid rows ---
     df_filtered = df_filtered[
