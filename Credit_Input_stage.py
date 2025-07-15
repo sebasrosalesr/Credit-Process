@@ -70,6 +70,9 @@ if uploaded_file:
 
     # Convert to float
     df_filtered['QTY'] = pd.to_numeric(df_filtered['QTY_extracted'], errors='coerce')
+    
+    # Drop temp columns
+    df_filtered.drop(columns=['QTY_raw', 'QTY_extracted'], inplace=True)
 
     # --- Keep valid rows ---
     df_filtered = df_filtered[
