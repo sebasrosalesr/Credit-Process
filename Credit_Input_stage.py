@@ -52,17 +52,24 @@ if uploaded_file:
         df_filtered["Sales Rep"] = df["Sales Rep"]
 
     # --- Clean numeric fields ---
+    # --- Clean Unit Price fields ---
     for field in ['Unit Price', 'Corrected Unit Price', 'Credit Request Total']:
-        df_filtered[field] = df_filtered[field].astype(str).str.replace(r'[$,]', '', regex=True)
-        df_filtered[field] = pd.to_numeric(df_filtered[field], errors='coerce')
-
-    df_filtered['QTY'] = (
-       df_filtered['QTY']
-       .astype(str)
-       .str.strip()
-       .str.extract(r'^(\d+(?:\.\d+)?)')[0]
-       .astype(float)
+        df_filtered[field] = (
+        df_filtered[field]
+        .astype(str)
+        .str.replace(r'[$,]', '', regex=True)
     )
+    df_filtered[field] = pd.to_numeric(df_filtered[field], errors='coerce')
+
+    # --- Clean QTY: Extract leading number from "2CS", "3EA", etc. ---
+    # Add a temp column to inspect what's being extracted
+    df_filtered['QTY_raw'] = df_filtered['QTY'].astype(str).str.strip()
+
+    # Extract leading digits (with optional decimal) from the string
+    df_filtered['QTY_extracted'] = df_filtered['QTY_raw'].str.extract(r'^(\d+(?:\.\d+)?)')[0]
+
+    # Convert to float
+    df_filtered['QTY'] = pd.to_numeric(df_filtered['QTY_extracted'], errors='coerce')
 
     # --- Keep valid rows ---
     df_filtered = df_filtered[
