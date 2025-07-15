@@ -22,7 +22,7 @@ db_path = "credits.db"
 conn = sqlite3.connect(db_path)
 
 # --- Load Firebase data ---
-st.header("🛠️ Edit Existing Record")
+st.header("🛠️ Edit Existing Records")
 data = ref.get()
 records = []
 
@@ -36,53 +36,52 @@ df_records = pd.DataFrame(records)
 # --- Search UI ---
 search_type = st.selectbox("Search by", ["Ticket Number", "Invoice + Item", "Invoice Only", "Item Only"])
 
+results = pd.DataFrame()
 if search_type == "Ticket Number":
-    ticket = st.text_input("Enter Ticket Number")
-    results = df_records[df_records['Ticket Number'].astype(str).str.lower() == ticket.lower()]
+    ticket = st.text_input("Enter Ticket Number").strip().lower()
+    results = df_records[df_records['Ticket Number'].astype(str).str.strip().str.lower() == ticket]
 elif search_type == "Invoice + Item":
-    invoice = st.text_input("Invoice Number")
-    item = st.text_input("Item Number")
+    invoice = st.text_input("Invoice Number").strip().lower()
+    item = st.text_input("Item Number").strip().lower()
     results = df_records[
-        (df_records['Invoice Number'].astype(str).str.lower() == invoice.lower()) &
-        (df_records['Item Number'].astype(str).str.lower() == item.lower())
+        (df_records['Invoice Number'].astype(str).str.strip().str.lower() == invoice) &
+        (df_records['Item Number'].astype(str).str.strip().str.lower() == item)
     ]
 elif search_type == "Invoice Only":
-    invoice = st.text_input("Invoice Number")
-    results = df_records[df_records['Invoice Number'].astype(str).str.lower() == invoice.lower()]
+    invoice = st.text_input("Invoice Number").strip().lower()
+    results = df_records[df_records['Invoice Number'].astype(str).str.strip().str.lower() == invoice]
 elif search_type == "Item Only":
-    item = st.text_input("Item Number")
-    results = df_records[df_records['Item Number'].astype(str).str.lower() == item.lower()]
-else:
-    results = pd.DataFrame()
+    item = st.text_input("Item Number").strip().lower()
+    results = df_records[df_records['Item Number'].astype(str).str.strip().str.lower() == item]
 
-# --- Edit Selected Record ---
+# --- Edit All Matching Records ---
 if not results.empty:
-    selected_index = st.selectbox("Select record to edit", results.index.tolist())
-    selected_row = results.loc[selected_index]
-    st.write("🔍 Current Record:")
-    st.json(selected_row.to_dict())
+    st.write(f"🔍 Found {len(results)} matching record(s):")
 
-    # --- Editable Fields ---
-    st.write("✏️ Edit Fields")
-    updated_data = {}
     editable_fields = [
         "Corrected Unit Price", "Credit Request Total", "Credit Type", "Customer Number", "Date",
         "Extended Price", "Invoice Number", "Issue Type", "Item Number", "QTY",
         "Reason for Credit", "Requested By", "Sales Rep", "Status",
         "Ticket Number", "Unit Price", "Type"
     ]
-    for field in editable_fields:
-        default = str(selected_row.get(field, ""))
-        updated_data[field] = st.text_input(field, value=default)
 
-    # --- Update Firebase ---
-    if st.button("💾 Save Changes"):
-        firebase_key = selected_row['firebase_key']
-        try:
-            ref.child(firebase_key).update(updated_data)
-            st.success("✅ Record updated successfully.")
-        except Exception as e:
-            st.error(f"❌ Failed to update record: {e}")
+    for idx, row in results.iterrows():
+        with st.expander(f"📄 Record {idx} — Invoice: {row.get('Invoice Number')} | Item: {row.get('Item Number')}"):
+            st.write("🧾 Current Record:")
+            st.json(row.to_dict())
+
+            updated_data = {}
+            for field in editable_fields:
+                default = str(row.get(field, ""))
+                updated_data[field] = st.text_input(f"{field} (Record {idx})", value=default, key=f"{field}_{idx}")
+
+            if st.button(f"💾 Save Changes for Record {idx}"):
+                firebase_key = row['firebase_key']
+                try:
+                    ref.child(firebase_key).update(updated_data)
+                    st.success(f"✅ Record {idx} updated successfully.")
+                except Exception as e:
+                    st.error(f"❌ Failed to update record {idx}: {e}")
 else:
     if search_type:
         st.info("No matching records found.")
