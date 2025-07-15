@@ -24,10 +24,26 @@ ticket_no = st.text_input("🎫 Ticket Number")
 
 if ticket_no:
     data = ref.get()
-    matches = {key: val for key, val in data.items() if str(val.get("Ticket Number")) == ticket_no}
+    ticket_no = ticket_no.strip().lower()
+
+    # First: try exact match in "Ticket Number"
+    matches = {
+        key: val for key, val in data.items()
+        if str(val.get("Ticket Number", "")).strip().lower() == ticket_no
+    }
+
+    # Fallback: if no match in "Ticket Number", search "Status" for the ticket as a substring
+    if not matches:
+        matches = {
+            key: val for key, val in data.items()
+            if ticket_no in str(val.get("Status", "")).lower()
+        }
+        source = "Status field"
+    else:
+        source = "Ticket Number column"
 
     if matches:
-        st.success(f"✅ Found {len(matches)} record(s) under Ticket Number: {ticket_no}")
+        st.success(f"✅ Found {len(matches)} record(s) using {source}.")
 
         st.header("Step 2: Update Status")
         status_option = st.selectbox("🔄 Select New Status", [
@@ -49,4 +65,4 @@ if ticket_no:
 
             st.success(f"✅ Status updated for {count} record(s)!")
     else:
-        st.warning("⚠️ No records found for that Ticket Number.")
+        st.warning("⚠️ No records found in Ticket Number or Status fields.")
