@@ -53,14 +53,15 @@ if billing_file:
         for key, record in data.items():
             inv = str(record.get("Invoice Number", "")).strip()
             item = str(record.get("Item Number", "")).strip()
-            existing_rtn = str(record.get("RTN/CR No.", "")).strip()
+            existing_rtn = str(record.get("RTN_CR_No", "")).strip()  # Firebase-safe key
             pair = (inv, item)
 
             if not existing_rtn and pair in billing_lookup:
-                ref.child(key).update({"RTN/CR No.": billing_lookup[pair]})
+                ref.child(key).update({"RTN_CR_No": billing_lookup[pair]})
                 updated_count += 1
 
         st.success(f"✅ Successfully updated {updated_count} record(s) in Firebase.")
+        st.info("🔐 RTN/CR No. stored in Firebase as 'RTN_CR_No' (slash is not allowed).")
     except Exception as e:
         st.error(f"❌ Error during processing: {e}")
 else:
