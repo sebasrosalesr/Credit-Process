@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 import firebase_admin
 from firebase_admin import credentials, db
+import pytz
 
 # --- Firebase Initialization ---
 firebase_config = dict(st.secrets["firebase"])
@@ -70,10 +71,13 @@ if search_input:
             if not status_description.strip():
                 st.warning("⚠️ Please enter a status description.")
             else:
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                status_entry = f"[{timestamp}] {status_option}: {status_description}"
+                # --- Set to Indianapolis timezone ---
+                indiana_tz = pytz.timezone("America/Indiana/Indianapolis")
+                timestamp = datetime.now(indiana_tz).strftime("%Y-%m-%d %H:%M:%S")
 
+                status_entry = f"[{timestamp}] {status_option}: {status_description}"
                 count = 0
+
                 for key, val in matches.items():
                     current_status = val.get("Status", "")
                     new_status = current_status + "\n" + status_entry if current_status else status_entry
