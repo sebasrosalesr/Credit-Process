@@ -1,7 +1,9 @@
 from datetime import datetime
 import streamlit as st
+import pandas as pd
 import firebase_admin
 from firebase_admin import credentials, db
+import io
 
 # --- Firebase Initialization ---
 firebase_config = dict(st.secrets["firebase"])
@@ -16,6 +18,7 @@ if not firebase_admin._apps:
 ref = db.reference('credit_requests')
 
 # --- Streamlit UI ---
+st.set_page_config(page_title="Credit Request Search Tool", layout="wide")
 st.title("🔍 Credit Request Search Tool")
 st.markdown("Search by Ticket Number, Invoice Number, Item Number, or a Pair")
 
@@ -59,9 +62,23 @@ if st.button("🔎 Search"):
 
         if matches:
             st.success(f"✅ {len(matches)} record(s) found.")
+            
+            # Show each record in an expander
             for i, record in enumerate(matches):
                 with st.expander(f"📌 Record {i + 1} — Ticket: {record.get('Ticket Number', 'N/A')}"):
                     st.json(record)
+
+            # Convert to DataFrame and enable download
+            df_export = pd.DataFrame(matches)
+            csv_buffer = io.StringIO()
+            df_export.to_csv(csv_buffer, index=False)
+
+            st.download_button(
+                label="⬇️ Download Results as CSV",
+                data=csv_buffer.getvalue(),
+                file_name="credit_request_results.csv",
+                mime="text/csv"
+            )
         else:
             st.warning("❌ No matching records found.")
 
