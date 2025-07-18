@@ -20,17 +20,15 @@ ref = db.reference('credit_requests')
 # --- Streamlit UI ---
 st.set_page_config(page_title="Credit Request Search Tool", layout="wide")
 st.title("🔍 Credit Request Search Tool")
-st.markdown("Search by Ticket Number, Invoice Number, Item Number, or a Pair")
+st.markdown("Search by Ticket Number, Invoice Number, Item Number, or Invoice+Item Pair")
 
 # --- Input Fields ---
 search_type = st.selectbox("Search By", ["Ticket Number", "Invoice Number", "Item Number", "Invoice + Item Pair"])
 
 input_ticket = st.text_input("🎫 Ticket Number") if search_type == "Ticket Number" else None
-input_invoice = st.text_input("📄 Invoice Number") if search_type in ["Invoice Number"] else None
-input_item = st.text_input("📦 Item Number") if search_type in ["Item Number"] else None
-
-uploaded_file = st.file_uploader("📤 Upload CSV with 'Invoice Number' and 'Item Number'",
-                                 type=["csv"]) if search_type == "Invoice + Item Pair" else None
+input_invoice = st.text_input("📄 Invoice Number") if search_type in ["Invoice Number", "Invoice + Item Pair"] else None
+input_item = st.text_input("📦 Item Number") if search_type in ["Item Number", "Invoice + Item Pair"] else None
+uploaded_file = st.file_uploader("📤 (Optional) Upload CSV with 'Invoice Number' and 'Item Number'", type=["csv"]) if search_type == "Invoice + Item Pair" else None
 
 # --- Search Action ---
 if st.button("🔎 Search"):
@@ -46,20 +44,25 @@ if st.button("🔎 Search"):
                 ticket = str(record.get("Ticket Number", "")).strip()
                 status = str(record.get("Status", "")).strip()
 
+                # Ticket Number
                 if search_type == "Ticket Number":
                     ticket_search = input_ticket.strip().lower()
                     if ticket.lower() == ticket_search or ticket_search in status.lower():
                         match = True
 
+                # Invoice Number
                 elif search_type == "Invoice Number":
                     if inv == input_invoice.strip():
                         match = True
 
+                # Item Number
                 elif search_type == "Item Number":
                     if item == input_item.strip():
                         match = True
 
+                # Invoice + Item Pair
                 elif search_type == "Invoice + Item Pair":
+                    # Case 1: CSV Upload
                     if uploaded_file:
                         pair_df = pd.read_csv(uploaded_file)
                         if not {'Invoice Number', 'Item Number'}.issubset(pair_df.columns):
@@ -73,9 +76,10 @@ if st.button("🔎 Search"):
                                 record["Search_Invoice"] = target_inv
                                 record["Search_Item"] = target_item
                                 break
-                    else:
-                        st.warning("📤 Please upload a CSV file.")
-                        break
+                    # Case 2: Manual input
+                    elif input_invoice and input_item:
+                        if inv == input_invoice.strip() and item == input_item.strip():
+                            match = True
 
                 if match:
                     record["Record ID"] = key
