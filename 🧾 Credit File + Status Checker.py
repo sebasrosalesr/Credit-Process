@@ -21,22 +21,22 @@ macro_mapping = {
     'Item Number': 'Item No.'
 }
 
-pump_mapping = {
-    'Invoice Number': 'SOPNUMBE',
-    'Item Number': 'ITEMNMBR'
+doc_analysis_mapping = {
+    'Invoice Number': 'SOP Number',
+    'Item Number': 'Item Number'
 }
 
-# --- DOC Header Detection ---
+# --- DOC Header Detection (Flexible) ---
 def load_doc_analysis_file(file):
     raw_df = pd.read_excel(file, header=None)
     header_row = None
     for i in range(10):
         row = raw_df.iloc[i].astype(str).str.upper().str.strip()
-        if "SOPNUMBE" in row.values and "ITEMNMBR" in row.values:
+        if "SOP NUMBER" in row.values and "ITEM NUMBER" in row.values:
             header_row = i
             break
     if header_row is None:
-        raise ValueError("❌ Could not detect header row. Please check the file.")
+        raise ValueError("❌ Could not detect header row. Please ensure 'SOP Number' and 'Item Number' are present.")
     df = pd.read_excel(file, header=header_row)
     return df
 
@@ -63,19 +63,22 @@ if uploaded_file:
         df_raw = pd.read_excel(uploaded_file, nrows=5)
         cols = set(df_raw.columns)
 
+        # Detect Macro File
         if "Doc No" in cols and "Item No." in cols:
             st.info("📘 Format Detected: Macro File")
             df = pd.read_excel(uploaded_file)
             search_df = convert_to_invoice_item_df(df, macro_mapping)
 
-        elif any("SOPNUMBE" in str(cell) for cell in df_raw.iloc[0].values):
-            st.info("📄 Format Detected: DOC Analysis File")
-            df = load_doc_analysis_file(uploaded_file)
-            search_df = convert_to_invoice_item_df(df, pump_mapping)
-
+        # Detect DOC Analysis File by scanning for headers
         else:
-            st.warning("⚠️ File format not recognized.")
-            st.stop()
+            st.info("📄 Trying to detect DOC Analysis headers...")
+            df = load_doc_analysis_file(uploaded_file)
+            if "SOP Number" in df.columns and "Item Number" in df.columns:
+                st.success("📄 Format Detected: DOC Analysis File")
+                search_df = convert_to_invoice_item_df(df, doc_analysis_mapping)
+            else:
+                st.warning("⚠️ Could not find required columns in the detected DOC Analysis file.")
+                st.stop()
 
         st.write(f"🔍 Found {len(search_df)} invoice/item pairs to check")
 
