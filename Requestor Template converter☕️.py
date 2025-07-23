@@ -30,7 +30,7 @@ doc_analysis_mapping = {
     'Date': ['DOCDATE', 'Doc Date'],
     'Credit Type': None,
     'Issue Type': None,
-    'Customer Number': ['CUSTNMBR'],
+    'Customer Number': ['CUSTNMBR','Cust Number'],
     'Invoice Number': ['SOPNUMBE', 'SOP Number'],
     'Item Number': ['ITEMNMBR', 'Item Number'],
     'QTY': ['QUANTITY', 'Qty on Invoice'],
