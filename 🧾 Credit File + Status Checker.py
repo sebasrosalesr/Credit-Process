@@ -27,7 +27,7 @@ doc_analysis_mapping = {
     'Item Number': 'Item Number'
 }
 
-# --- DOC Header Detection (Flexible) ---
+# --- DOC Header Detection ---
 def load_doc_analysis_file(file):
     raw_df = pd.read_excel(file, header=None)
     header_row = None
@@ -41,7 +41,7 @@ def load_doc_analysis_file(file):
     df = pd.read_excel(file, header=header_row)
     return df
 
-# --- File Conversion Function ---
+# --- Convert to (Invoice, Item) pair DataFrame ---
 def convert_to_invoice_item_df(df, mapping):
     out_df = pd.DataFrame()
     for col in ['Invoice Number', 'Item Number']:
@@ -52,16 +52,20 @@ def convert_to_invoice_item_df(df, mapping):
             out_df[col] = None
     return out_df.dropna()
 
-# --- Update Extractor (Text + Timestamp) ---
+# --- Extract Update Text, Timestamp, and Ticket Number ---
 def extract_update_info(status_text):
     if pd.isna(status_text):
-        return "No updates", None
+        return "No updates", None, None
+
     update_match = re.search(r'Update:\s*(.*)', status_text)
-    timestamp_match = re.search(r'\[(.*?)\]', status_text)
-    
+    timestamp_match = re.search(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]', status_text)
+    ticket_match = re.search(r'Ticket\s+#?([Rr]?-?\d+)', status_text)
+
     update_text = update_match.group(1).strip() if update_match else "No updates"
-    timestamp = timestamp_match.group(1).strip() if timestamp_match else None
-    return update_text, timestamp
+    timestamp = timestamp_match.group(1) if timestamp_match else None
+    ticket_number = f"R-{ticket_match.group(1).lstrip('Rr-')}" if ticket_match else "Not listed"
+
+    return update_text, timestamp, ticket_number
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="📎 Credit File Pair Lookup", layout="wide")
@@ -75,13 +79,12 @@ if uploaded_file:
         df_raw = pd.read_excel(uploaded_file, nrows=5)
         cols = set(df_raw.columns)
 
-        # Detect Macro File
+        # Detect file type
         if "Doc No" in cols and "Item No." in cols:
             st.info("📘 Format Detected: Macro File")
             df = pd.read_excel(uploaded_file)
             search_df = convert_to_invoice_item_df(df, macro_mapping)
 
-        # Detect DOC Analysis File by scanning for headers
         else:
             st.info("📄 Trying to detect DOC Analysis headers...")
             df = load_doc_analysis_file(uploaded_file)
@@ -113,22 +116,22 @@ if uploaded_file:
         if matches:
             df_results = pd.DataFrame(matches)
 
-            # ✅ Clean and transform
+            # Clean unwanted columns
             df_results.drop(columns=["Sales Rep", "RTN_CR_No", "Reason for Credit"], errors="ignore", inplace=True)
 
-            # Extract update + timestamp
-            df_results[["Latest Update", "Update Timestamp"]] = df_results["Status"].apply(
+            # Extract update info
+            df_results[["Latest Update", "Update Timestamp", "Ticket Number"]] = df_results["Status"].apply(
                 lambda x: pd.Series(extract_update_info(x))
             )
 
             st.success(f"✅ Found {len(df_results)} matching records in Firebase")
 
-            # --- Display cleaned table ---
-            display_cols = ['Match Invoice', 'Match Item', 'Update Timestamp', 'Latest Update', 'Credit Request Total']
+            # Display selected columns
+            display_cols = ['Match Invoice', 'Match Item', 'Update Timestamp', 'Latest Update', 'Ticket Number', 'Credit Request Total']
             existing_cols = [col for col in display_cols if col in df_results.columns]
             st.dataframe(df_results[existing_cols])
 
-            # --- Download option ---
+            # Download option
             csv_buf = io.StringIO()
             df_results[existing_cols].to_csv(csv_buf, index=False)
             st.download_button("⬇️ Download Results", data=csv_buf.getvalue(),
