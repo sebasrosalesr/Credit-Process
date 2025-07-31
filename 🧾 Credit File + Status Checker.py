@@ -52,12 +52,16 @@ def convert_to_invoice_item_df(df, mapping):
             out_df[col] = None
     return out_df.dropna()
 
-# --- Update Extractor ---
-def extract_update(status_text):
+# --- Update Extractor (Text + Timestamp) ---
+def extract_update_info(status_text):
     if pd.isna(status_text):
-        return "No updates"
-    match = re.search(r'Update:\s*(.*)', status_text)
-    return match.group(1).strip() if match else "No updates"
+        return "No updates", None
+    update_match = re.search(r'Update:\s*(.*)', status_text)
+    timestamp_match = re.search(r'\[(.*?)\]', status_text)
+    
+    update_text = update_match.group(1).strip() if update_match else "No updates"
+    timestamp = timestamp_match.group(1).strip() if timestamp_match else None
+    return update_text, timestamp
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="📎 Credit File Pair Lookup", layout="wide")
@@ -111,16 +115,22 @@ if uploaded_file:
 
             # ✅ Clean and transform
             df_results.drop(columns=["Sales Rep", "RTN_CR_No", "Reason for Credit"], errors="ignore", inplace=True)
-            df_results["Latest Update"] = df_results["Status"].apply(extract_update)
+
+            # Extract update + timestamp
+            df_results[["Latest Update", "Update Timestamp"]] = df_results["Status"].apply(
+                lambda x: pd.Series(extract_update_info(x))
+            )
 
             st.success(f"✅ Found {len(df_results)} matching records in Firebase")
 
             # --- Display cleaned table ---
-            st.dataframe(df_results[['Match Invoice', 'Match Item', 'Latest Update', 'Credit Request Total']])
+            display_cols = ['Match Invoice', 'Match Item', 'Update Timestamp', 'Latest Update', 'Credit Request Total']
+            existing_cols = [col for col in display_cols if col in df_results.columns]
+            st.dataframe(df_results[existing_cols])
 
             # --- Download option ---
             csv_buf = io.StringIO()
-            df_results[['Match Invoice', 'Match Item', 'Latest Update']].to_csv(csv_buf, index=False)
+            df_results[existing_cols].to_csv(csv_buf, index=False)
             st.download_button("⬇️ Download Results", data=csv_buf.getvalue(),
                                file_name="firebase_matches_with_updates.csv", mime="text/csv")
         else:
