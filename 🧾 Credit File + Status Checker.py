@@ -4,6 +4,7 @@ import pandas as pd
 import firebase_admin
 from firebase_admin import credentials, db
 import io
+import re
 
 # --- Firebase Init ---
 firebase_config = dict(st.secrets["firebase"])
@@ -50,6 +51,13 @@ def convert_to_invoice_item_df(df, mapping):
         else:
             out_df[col] = None
     return out_df.dropna()
+
+# --- Update Extractor ---
+def extract_update(status_text):
+    if pd.isna(status_text):
+        return "No updates"
+    match = re.search(r'Update:\s*(.*)', status_text)
+    return match.group(1).strip() if match else "No updates"
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="📎 Credit File Pair Lookup", layout="wide")
@@ -101,17 +109,20 @@ if uploaded_file:
         if matches:
             df_results = pd.DataFrame(matches)
 
-            # ✅ Drop columns before display
+            # ✅ Clean and transform
             df_results.drop(columns=["Sales Rep", "RTN_CR_No", "Reason for Credit"], errors="ignore", inplace=True)
+            df_results["Latest Update"] = df_results["Status"].apply(extract_update)
 
             st.success(f"✅ Found {len(df_results)} matching records in Firebase")
-            st.dataframe(df_results)
 
-            # Download option
+            # --- Display cleaned table ---
+            st.dataframe(df_results[['Match Invoice', 'Match Item', 'Latest Update']])
+
+            # --- Download option ---
             csv_buf = io.StringIO()
-            df_results.to_csv(csv_buf, index=False)
+            df_results[['Match Invoice', 'Match Item', 'Latest Update']].to_csv(csv_buf, index=False)
             st.download_button("⬇️ Download Results", data=csv_buf.getvalue(),
-                               file_name="firebase_matches.csv", mime="text/csv")
+                               file_name="firebase_matches_with_updates.csv", mime="text/csv")
         else:
             st.warning("❌ No matching records found in Firebase.")
 
