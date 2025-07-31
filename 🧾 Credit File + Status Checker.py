@@ -52,17 +52,21 @@ def convert_to_invoice_item_df(df, mapping):
             out_df[col] = None
     return out_df.dropna()
 
-# --- Extract Update Text, Timestamp, and Ticket Number ---
-def extract_update_info(status_text):
-    if pd.isna(status_text):
+# --- Extract Status Info (Update, Timestamp, Ticket) ---
+def extract_status_info(text):
+    if pd.isna(text):
         return "No updates", None, None
 
-    update_match = re.search(r'Update:\s*(.*)', status_text)
-    timestamp_match = re.search(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]', status_text)
-    ticket_match = re.search(r'Ticket\s+#?([Rr]?-?\d+)', status_text)
-
-    update_text = update_match.group(1).strip() if update_match else "No updates"
+    # Detect timestamp in brackets
+    timestamp_match = re.search(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]', text)
     timestamp = timestamp_match.group(1) if timestamp_match else None
+
+    # Try known status prefixes
+    status_match = re.search(r'(Update|In Process|Submitted to Billing|Credit No & Reason):\s*(.*)', text)
+    update_text = status_match.group(2).strip() if status_match else "No detailed status"
+
+    # Detect ticket number
+    ticket_match = re.search(r'Ticket\s+#?([Rr]?-?\d+)', text)
     ticket_number = f"R-{ticket_match.group(1).lstrip('Rr-')}" if ticket_match else "Not listed"
 
     return update_text, timestamp, ticket_number
@@ -84,7 +88,6 @@ if uploaded_file:
             st.info("📘 Format Detected: Macro File")
             df = pd.read_excel(uploaded_file)
             search_df = convert_to_invoice_item_df(df, macro_mapping)
-
         else:
             st.info("📄 Trying to detect DOC Analysis headers...")
             df = load_doc_analysis_file(uploaded_file)
@@ -116,22 +119,20 @@ if uploaded_file:
         if matches:
             df_results = pd.DataFrame(matches)
 
-            # Clean unwanted columns
+            # Clean and extract
             df_results.drop(columns=["Sales Rep", "RTN_CR_No", "Reason for Credit"], errors="ignore", inplace=True)
-
-            # Extract update info
             df_results[["Latest Update", "Update Timestamp", "Ticket Number"]] = df_results["Status"].apply(
-                lambda x: pd.Series(extract_update_info(x))
+                lambda x: pd.Series(extract_status_info(x))
             )
 
             st.success(f"✅ Found {len(df_results)} matching records in Firebase")
 
-            # Display selected columns
+            # Display relevant columns
             display_cols = ['Match Invoice', 'Match Item', 'Update Timestamp', 'Latest Update', 'Ticket Number', 'Credit Request Total']
             existing_cols = [col for col in display_cols if col in df_results.columns]
             st.dataframe(df_results[existing_cols])
 
-            # Download option
+            # Download button
             csv_buf = io.StringIO()
             df_results[existing_cols].to_csv(csv_buf, index=False)
             st.download_button("⬇️ Download Results", data=csv_buf.getvalue(),
