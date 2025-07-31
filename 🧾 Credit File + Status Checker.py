@@ -116,7 +116,7 @@ if uploaded_file:
             st.success(f"✅ Found {len(df_results)} matching records in Firebase")
 
             # --- Display cleaned table ---
-            st.dataframe(df_results[['Match Invoice', 'Match Item', 'Date', 'Latest Update', 'Credit Request Total']])
+            st.dataframe(df_results[['Match Invoice', 'Match Item', 'Latest Update', 'Credit Request Total']])
 
             # --- Download option ---
             csv_buf = io.StringIO()
