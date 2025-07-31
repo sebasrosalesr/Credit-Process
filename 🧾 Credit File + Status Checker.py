@@ -100,6 +100,10 @@ if uploaded_file:
 
         if matches:
             df_results = pd.DataFrame(matches)
+
+            # ✅ Drop columns before display
+            df_results.drop(columns=["Sales Rep", "RTN_CR_No", "Reason for Credit"], errors="ignore", inplace=True)
+
             st.success(f"✅ Found {len(df_results)} matching records in Firebase")
             st.dataframe(df_results)
 
