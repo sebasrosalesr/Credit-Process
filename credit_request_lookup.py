@@ -46,7 +46,7 @@ if st.button("🔎 Search"):
                 # Ticket Number
                 if search_type == "Ticket Number":
                     ticket_search = input_ticket.strip().lower()
-                    if ticket.lower() == ticket_search or ticket_search in status.lower():
+                    if ticket.lower() == ticket_search:
                         match = True
 
                 # Invoice Number
