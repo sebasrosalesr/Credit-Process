@@ -18,7 +18,7 @@ if not firebase_admin._apps:
 ref = db.reference('credit_requests')
 
 # --- Streamlit UI ---
-st.set_page_config(page_title="🔎 Credit Request Search Tool", layout="wide")
+st.set_page_config(page_title="🔎 Credit Processing Snapshot(Pricing)", layout="wide")
 st.title("🔎 Credit Request Search Tool")
 st.markdown("Search by Ticket Number, Invoice Number, Item Number, or Invoice+Item Pair")
 
