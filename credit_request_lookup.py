@@ -19,7 +19,7 @@ ref = db.reference('credit_requests')
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="🔎 Credit Processing Snapshot(Pricing)", layout="wide")
-st.title("🔎 Credit Request Search Tool")
+st.title("🔎 Credit Processing Snapshot(Pricing)l")
 st.markdown("Search by Ticket Number, Invoice Number, Item Number, or Invoice+Item Pair")
 
 # --- Input Fields ---
