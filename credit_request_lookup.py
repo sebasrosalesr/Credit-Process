@@ -28,20 +28,35 @@ search_type = st.selectbox("Search By", ["Ticket Number", "Invoice Number", "Ite
 input_ticket = st.text_input("🎫 Ticket Number") if search_type == "Ticket Number" else None
 input_invoice = st.text_input("📄 Invoice Number") if search_type in ["Invoice Number", "Invoice + Item Pair"] else None
 input_item = st.text_input("📦 Item Number") if search_type in ["Item Number", "Invoice + Item Pair"] else None
-uploaded_file = st.file_uploader("📤 (Optional) Upload CSV with 'Invoice Number' and 'Item Number'", type=["csv"]) if search_type == "Invoice + Item Pair" else None
+uploaded_file = st.file_uploader(
+    "📤 (Optional) Upload CSV with 'Invoice Number' and 'Item Number'",
+    type=["csv"]
+) if search_type == "Invoice + Item Pair" else None
 
-# --- Extract status update and timestamp ---
-def extract_status_info(text):
-    if pd.isna(text) or not isinstance(text, str):
+# --- Extract the latest status update and timestamp ---
+def extract_status_info(text: str):
+    """
+    Returns (latest_update_text, latest_timestamp_str)
+    Finds the LAST '[YYYY-MM-DD HH:MM:SS] ...' line in Status.
+    Falls back to labeled patterns if no timestamped line found.
+    """
+    if pd.isna(text) or not isinstance(text, str) or not text.strip():
         return "No updates", None
 
-    timestamp_match = re.search(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]', text)
-    timestamp = timestamp_match.group(1) if timestamp_match else None
+    # 1) Try to find the last timestamped line
+    ts_iter = list(re.finditer(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]\s*(.*)', text))
+    if ts_iter:
+        last = ts_iter[-1]
+        ts = last.group(1)
+        msg = last.group(2).strip() or "No detailed status"
+        return msg, ts
 
-    status_match = re.search(r'(Update|In Process|Submitted to Billing|Credit No & Reason):\s*(.*)', text)
-    update_text = status_match.group(2).strip() if status_match else "No detailed status"
+    # 2) Fallback to older labeled formats
+    m = re.search(r'(Update|In Process|Submitted to Billing|Credit No & Reason):\s*(.*)', text, flags=re.IGNORECASE)
+    if m:
+        return (m.group(2).strip() or "No detailed status"), None
 
-    return update_text, timestamp
+    return "No detailed status", None
 
 # --- Search Action ---
 if st.button("🔎 Search"):
@@ -59,8 +74,7 @@ if st.button("🔎 Search"):
 
                 # Ticket Number
                 if search_type == "Ticket Number":
-                    ticket_search = input_ticket.strip().lower()
-                    if ticket.lower() == ticket_search:
+                    if ticket.lower() == input_ticket.strip().lower():
                         match = True
 
                 # Invoice Number
@@ -81,12 +95,10 @@ if st.button("🔎 Search"):
                             st.error("CSV must contain 'Invoice Number' and 'Item Number' columns.")
                             break
                         for _, row in pair_df.iterrows():
-                            target_inv = str(row['Invoice Number']).strip()
-                            target_item = str(row['Item Number']).strip()
-                            if inv == target_inv and item == target_item:
+                            if inv == str(row['Invoice Number']).strip() and item == str(row['Item Number']).strip():
                                 match = True
-                                record["Search_Invoice"] = target_inv
-                                record["Search_Item"] = target_item
+                                record["Search_Invoice"] = row['Invoice Number']
+                                record["Search_Item"] = row['Item Number']
                                 break
                     elif input_invoice and input_item:
                         if inv == input_invoice.strip() and item == input_item.strip():
