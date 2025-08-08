@@ -1,4 +1,5 @@
 from datetime import datetime, date
+from dateutil.parser import parse
 import streamlit as st
 import pandas as pd
 import firebase_admin
@@ -32,6 +33,13 @@ ref = db.reference("credit_requests")
 # =========================
 # Helpers
 # =========================
+def safe_parse_force_string(x):
+    """Force parse dates from any string using dateutil, return NaT if fails."""
+    try:
+        return parse(str(x), fuzzy=True)
+    except:
+        return pd.NaT
+
 @st.cache_data(ttl=120)
 def fetch_credits_df() -> pd.DataFrame:
     """Fetch all records, coerce to EXPECTED_COLUMNS, parse date, compute age & buckets."""
@@ -39,20 +47,19 @@ def fetch_credits_df() -> pd.DataFrame:
     rows = []
     for key, item in data.items():
         rec = {col: item.get(col, None) for col in EXPECTED_COLUMNS}
-        rec["Record ID"] = key  # ensure we always keep the Firebase key
+        rec["Record ID"] = key  # Firebase key
         rows.append(rec)
 
     df = pd.DataFrame(rows)
 
-    # Robust date parsing
-    # Accepts formats like YYYY-MM-DD, MM/DD/YYYY, with/without time
-    df["Date_parsed"] = pd.to_datetime(df.get("Date"), errors="coerce", infer_datetime_format=True)
+    # ✅ Robust date parsing
+    df["Date_parsed"] = df["Date"].apply(safe_parse_force_string)
 
-    # Keep only rows with a valid date
-    df = df[~df["Date_parsed"].isna()].copy()
+    # Drop rows with no valid date
+    df = df.dropna(subset=["Date_parsed"]).copy()
 
     # Age (days)
-    today = pd.Timestamp(date.today())  # normalized to midnight
+    today = pd.Timestamp(date.today())
     df["Age (days)"] = (today - df["Date_parsed"]).dt.days
 
     # Aging buckets
@@ -60,14 +67,14 @@ def fetch_credits_df() -> pd.DataFrame:
     labels = ["0-7", "8-14", "15-30", "31-60", "61-90", "91-180", "181-365", "365+"]
     df["Aging Bucket"] = pd.cut(df["Age (days)"], bins=bins, labels=labels)
 
-    # Sort: oldest first
+    # Sort oldest first
     df = df.sort_values(["Age (days)", "Date_parsed"], ascending=[False, True])
 
-    # Normalize money column (numeric for later pretty print)
+    # Numeric for money
     if "Credit Request Total" in df.columns:
         df["Credit Request Total"] = pd.to_numeric(df["Credit Request Total"], errors="coerce")
 
-    # Ensure no duplicate column names (defensive)
+    # Remove duplicate column names
     df = df.loc[:, ~df.columns.duplicated()].copy()
     return df
 
@@ -102,7 +109,7 @@ if must_have_cr and "RTN_CR_No" in df.columns:
 
 df_view = df[mask].copy()
 
-# Display columns (keep Date_parsed name to avoid duplicates)
+# Display columns
 desired_cols = [
     "Age (days)", "Aging Bucket", "Date_parsed",
     "Ticket Number", "Invoice Number", "Item Number",
@@ -114,13 +121,10 @@ show_cols = [c for c in desired_cols if c in df_view.columns]
 st.subheader(f"Results ({len(df_view):,}) — Oldest on top")
 
 if show_cols:
-    # Pretty money
     if "Credit Request Total" in show_cols:
         df_view["Credit Request Total"] = format_money_series(df_view["Credit Request Total"])
 
-    # Friendlier column label for Date_parsed
     rename_map = {"Date_parsed": "Date"}
-    safe_cols = [rename_map.get(c, c) for c in show_cols]
     df_to_show = df_view[show_cols].rename(columns=rename_map)
 
     st.dataframe(df_to_show, use_container_width=True)
@@ -137,9 +141,7 @@ if show_cols:
 else:
     st.info("No displayable columns found.")
 
-# =========================
-# Quick Summary
-# =========================
+# Summary
 c1, c2, c3 = st.columns(3)
 with c1:
     st.metric("Total rows (dated)", f"{len(df):,}")
