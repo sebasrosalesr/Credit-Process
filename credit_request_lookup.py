@@ -6,9 +6,12 @@ from firebase_admin import credentials, db
 import io
 import re
 
-# --- Firebase Init ---
+# =========================
+# Firebase Initialization
+# =========================
 firebase_config = dict(st.secrets["firebase"])
 firebase_config["private_key"] = firebase_config["private_key"].replace("\\n", "\n")
+
 cred = credentials.Certificate(firebase_config)
 if not firebase_admin._apps:
     firebase_admin.initialize_app(cred, {
@@ -17,13 +20,19 @@ if not firebase_admin._apps:
 
 ref = db.reference('credit_requests')
 
-# --- Streamlit UI ---
-st.set_page_config(page_title="🔎 Credit Processing Snapshot(Pricing)", layout="wide")
-st.title("🔎 Credit Processing Snapshot(Pricing)")
-st.markdown("Search by Ticket Number, Invoice Number, Item Number, or Invoice+Item Pair")
+# =========================
+# Streamlit UI
+# =========================
+st.set_page_config(page_title="🔎 Credit Processing Snapshot (Pricing)", layout="wide")
+st.title("🔎 Credit Processing Snapshot (Pricing)")
+st.markdown("Search by Ticket Number, Invoice Number, Item Number, or Invoice + Item Pair.")
 
-# --- Input Fields ---
-search_type = st.selectbox("Search By", ["Ticket Number", "Invoice Number", "Item Number", "Invoice + Item Pair"])
+# =========================
+# Input Fields
+# =========================
+search_type = st.selectbox("Search By", [
+    "Ticket Number", "Invoice Number", "Item Number", "Invoice + Item Pair"
+])
 
 input_ticket = st.text_input("🎫 Ticket Number") if search_type == "Ticket Number" else None
 input_invoice = st.text_input("📄 Invoice Number") if search_type in ["Invoice Number", "Invoice + Item Pair"] else None
@@ -33,7 +42,9 @@ uploaded_file = st.file_uploader(
     type=["csv"]
 ) if search_type == "Invoice + Item Pair" else None
 
-# --- Extract the latest status update and timestamp ---
+# =========================
+# Helpers
+# =========================
 def extract_status_info(text: str):
     """
     Returns (latest_update_text, latest_timestamp_str)
@@ -44,7 +55,10 @@ def extract_status_info(text: str):
         return "No updates", None
 
     # 1) Try to find the last timestamped line
-    ts_iter = list(re.finditer(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]\s*(.*)', text))
+    ts_iter = list(re.finditer(
+        r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]\s*(.*)',
+        text
+    ))
     if ts_iter:
         last = ts_iter[-1]
         ts = last.group(1)
@@ -58,7 +72,18 @@ def extract_status_info(text: str):
 
     return "No detailed status", None
 
-# --- Search Action ---
+
+def format_currency(val):
+    """Format value as currency ($1,234.56) or return empty string."""
+    try:
+        return f"${float(val):,.2f}" if pd.notna(val) and str(val).strip() != "" else ""
+    except:
+        return ""
+
+
+# =========================
+# Search Action
+# =========================
 if st.button("🔎 Search"):
     try:
         data = ref.get()
@@ -73,17 +98,17 @@ if st.button("🔎 Search"):
                 status = str(record.get("Status", "")).strip()
 
                 # Ticket Number
-                if search_type == "Ticket Number":
+                if search_type == "Ticket Number" and input_ticket:
                     if ticket.lower() == input_ticket.strip().lower():
                         match = True
 
                 # Invoice Number
-                elif search_type == "Invoice Number":
+                elif search_type == "Invoice Number" and input_invoice:
                     if inv == input_invoice.strip():
                         match = True
 
                 # Item Number
-                elif search_type == "Item Number":
+                elif search_type == "Item Number" and input_item:
                     if item == input_item.strip():
                         match = True
 
@@ -104,6 +129,7 @@ if st.button("🔎 Search"):
                         if inv == input_invoice.strip() and item == input_item.strip():
                             match = True
 
+                # If match found, store record
                 if match:
                     record["Record ID"] = key
                     update_text, update_ts = extract_status_info(status)
@@ -111,18 +137,29 @@ if st.button("🔎 Search"):
                     record["Update Timestamp"] = update_ts
                     matches.append(record)
 
+        # =========================
+        # Display results
+        # =========================
         if matches:
             st.success(f"✅ {len(matches)} record(s) found.")
             df_results = pd.DataFrame(matches)
 
+            # Format Credit Request Total
+            if "Credit Request Total" in df_results.columns:
+                df_results["Credit Request Total ($)"] = df_results["Credit Request Total"].apply(format_currency)
+                if "Credit Request Total" in df_results.columns:
+                    df_results.drop(columns=["Credit Request Total"], inplace=True)
+
             # Show only the most relevant columns
-            display_cols = ['Invoice Number', 'Item Number', 'Update Timestamp', 'Latest Update',
-                            'Ticket Number', 'Credit Request Total']
+            display_cols = [
+                'Invoice Number', 'Item Number', 'Update Timestamp', 'Latest Update',
+                'Ticket Number', 'Credit Request Total ($)'
+            ]
             existing_cols = [col for col in display_cols if col in df_results.columns]
 
             st.dataframe(df_results[existing_cols])
 
-            # Download
+            # Download results
             csv_buf = io.StringIO()
             df_results[existing_cols].to_csv(csv_buf, index=False)
             st.download_button(
