@@ -6,11 +6,16 @@ import io
 standard_columns = [
     'Date', 'Credit Type', 'Issue Type', 'Customer Number', 'Invoice Number',
     'Item Number', 'QTY', 'Unit Price', 'Extended Price', 'Corrected Unit Price',
-    'Extended Correct Price', 'Credit Request Total', 'Requested By',
-    'Reason for Credit', 'Status', 'Ticket Number'
+    'Extended Correct Price',
+    # NEW: split credits for macro files
+    'Item Non-Taxable Credit', 'Item Taxable Credit',
+    # Keep the original total column in the schema, but we won't populate it for Macro files
+    'Credit Request Total',
+    'Requested By', 'Reason for Credit', 'Status', 'Ticket Number'
 ]
 
 # --- Macro File Mapping ---
+# Note: we DO NOT map 'Credit Request Total' here as requested
 macro_mapping = {
     'Date': 'Req Date',
     'Credit Type': 'CRType',
@@ -18,7 +23,10 @@ macro_mapping = {
     'Customer Number': 'Cust ID',
     'Invoice Number': 'Doc No',
     'Item Number': 'Item No.',
-    'Credit Request Total': 'Total Credit Amt',
+    # map the two credits from macro file:
+    'Item Non-Taxable Credit': 'Item Non-Taxable Credit',
+    'Item Taxable Credit': 'Item Taxable Credit',
+    # leave 'Credit Request Total' unmapped (None)
     'Requested By': 'Requested By',
     'Reason for Credit': 'Reason',
     'Status': 'Status'
@@ -38,6 +46,9 @@ doc_analysis_mapping = {
     'Extended Price': ['XTNDPRCE', 'Extended Price'],
     'Corrected Unit Price': None,
     'Extended Correct Price': None,
+    # for DOC Analysis we don't have those credits normally, so leave unmapped:
+    'Item Non-Taxable Credit': None,
+    'Item Taxable Credit': None,
     'Credit Request Total': None,
     'Requested By': None,
     'Reason for Credit': None,
@@ -75,6 +86,7 @@ def convert_file(df, mapping):
     for std_col in standard_columns:
         source = mapping.get(std_col)
         if isinstance(source, list):
+            # try alternates
             for alt in source:
                 match = cols_upper.get(alt.strip().upper())
                 if match:
@@ -87,6 +99,7 @@ def convert_file(df, mapping):
             df_out[std_col] = df[match] if match else None
         else:
             df_out[std_col] = None
+
     return df_out
 
 # --- Excel Export ---
@@ -114,6 +127,10 @@ if uploaded_files:
                 st.info(f"📘 Format Detected: Macro File - {uploaded_file.name}")
                 df_full = pd.read_excel(uploaded_file)
                 converted = convert_file(df_full, macro_mapping)
+
+                # Ensure Credit Request Total is blank for Macro version
+                converted['Credit Request Total'] = None
+
                 converted['Source File'] = uploaded_file.name
                 converted['Format'] = 'Macro File'
                 converted_frames.append(converted)
