@@ -7,15 +7,16 @@ standard_columns = [
     'Date', 'Credit Type', 'Issue Type', 'Customer Number', 'Invoice Number',
     'Item Number', 'QTY', 'Unit Price', 'Extended Price', 'Corrected Unit Price',
     'Extended Correct Price',
-    # NEW: split credits for macro files
+    # Split credits for macro files
     'Item Non-Taxable Credit', 'Item Taxable Credit',
-    # Keep the original total column in the schema, but we won't populate it for Macro files
+    # Total (for Macro files, pulled from "Total Credit Amt")
     'Credit Request Total',
     'Requested By', 'Reason for Credit', 'Status', 'Ticket Number'
 ]
 
 # --- Macro File Mapping ---
-# Note: we DO NOT map 'Credit Request Total' here as requested
+# Note: we DO map the two item credit columns; "Credit Request Total" will be
+# populated directly from "Total Credit Amt" after conversion.
 macro_mapping = {
     'Date': 'Req Date',
     'Credit Type': 'CRType',
@@ -23,14 +24,12 @@ macro_mapping = {
     'Customer Number': 'Cust ID',
     'Invoice Number': 'Doc No',
     'Item Number': 'Item No.',
-    # map the two credits from macro file:
     'Item Non-Taxable Credit': 'Item Non-Taxable Credit',
     'Item Taxable Credit': 'Item Taxable Credit',
-    # leave 'Credit Request Total' unmapped (None)
     'Requested By': 'Requested By',
     'Reason for Credit': 'Reason',
     'Status': 'Status'
-    # Other fields will default to None
+    # Other fields default to None
 }
 
 # --- DOC Analysis Mapping (with alternate names) ---
@@ -46,7 +45,6 @@ doc_analysis_mapping = {
     'Extended Price': ['XTNDPRCE', 'Extended Price'],
     'Corrected Unit Price': None,
     'Extended Correct Price': None,
-    # for DOC Analysis we don't have those credits normally, so leave unmapped:
     'Item Non-Taxable Credit': None,
     'Item Taxable Credit': None,
     'Credit Request Total': None,
@@ -62,11 +60,12 @@ def load_doc_analysis_file(file):
     header_row = None
     for i in range(10):
         row = raw_df.iloc[i].astype(str).str.upper().str.strip()
-        if any(col in row.values for col in ['SOPNUMBE', 'SOP NUMBER']) and any(col in row.values for col in ['ITEMNMBR', 'ITEM NUMBER']):
+        if any(col in row.values for col in ['SOPNUMBE', 'SOP NUMBER']) and \
+           any(col in row.values for col in ['ITEMNMBR', 'ITEM NUMBER']):
             header_row = i
             break
     if header_row is None:
-        raise ValueError("❌ Could not detect header row. Please ensure SOPNUMBE or SOP Number and ITEMNMBR or Item Number exist.")
+        raise ValueError("❌ Could not detect header row. Ensure SOPNUMBE/SOP Number and ITEMNMBR/Item Number exist.")
     df = pd.read_excel(file, header=header_row)
     df.columns = df.columns.str.strip()
     return df
@@ -99,7 +98,6 @@ def convert_file(df, mapping):
             df_out[std_col] = df[match] if match else None
         else:
             df_out[std_col] = None
-
     return df_out
 
 # --- Excel Export ---
@@ -126,14 +124,20 @@ if uploaded_files:
             if 'Req Date' in sample_cols and 'Cust ID' in sample_cols and 'Total Credit Amt' in sample_cols:
                 st.info(f"📘 Format Detected: Macro File - {uploaded_file.name}")
                 df_full = pd.read_excel(uploaded_file)
+
+                # Convert columns via macro mapping
                 converted = convert_file(df_full, macro_mapping)
 
-                # Ensure Credit Request Total is blank for Macro version
-                converted['Credit Request Total'] = None
+                # Populate Credit Request Total from Total Credit Amt (as requested)
+                if 'Total Credit Amt' in df_full.columns:
+                    converted['Credit Request Total'] = df_full['Total Credit Amt']
+                else:
+                    converted['Credit Request Total'] = None
 
                 converted['Source File'] = uploaded_file.name
                 converted['Format'] = 'Macro File'
                 converted_frames.append(converted)
+
             else:
                 st.info(f"🔍 Trying to detect DOC Analysis format - {uploaded_file.name}")
                 df_doc = load_doc_analysis_file(uploaded_file)
