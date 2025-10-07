@@ -257,3 +257,4 @@ st.markdown("""
 - Works even if files have slightly different column spellings (aliases are mapped).
 - Use **Contains** mode for partial item codes.
 """)
+
