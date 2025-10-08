@@ -14,24 +14,37 @@ st.set_page_config(page_title="Credit Request vs Billing Check", layout="wide")
 st.title("🔍 Credit Request vs Billing Check")
 st.header("Step 1: Upload Files")
 
-# ------------------------------
-# Firebase Settings (edit or set via UI)
-# ------------------------------
-st.subheader("⚙️ Firebase Connection (for EDI)")
-use_firebase = st.checkbox("Enable Firebase EDI lookup", value=True, help="Uncheck to skip EDI enrichment")
+# --- Firebase Initialization ---
+import firebase_admin
+from firebase_admin import credentials, db
 
-# Option A: paste your known paths (for local use / server)
-DEFAULT_DB_URL = "https://creditapp-tm-default-rtdb.firebaseio.com/"
-SERVICE_ACCOUNT_PATH = st.text_input(
-    "Service account JSON path (leave blank if uploading JSON below)",
-    value="",
-    placeholder="/path/to/serviceAccount.json",
-)
+# Load Firebase credentials from Streamlit secrets
+firebase_config = dict(st.secrets["firebase"])
+firebase_config["private_key"] = firebase_config["private_key"].replace("\\n", "\n")
+cred = credentials.Certificate(firebase_config)
 
-# Option B: upload service account JSON securely
-uploaded_sa = st.file_uploader("Or upload Service Account JSON", type=["json"], key="sa_json", help="If provided, takes precedence over the path above.")
+if not firebase_admin._apps:
+    firebase_admin.initialize_app(cred, {
+        'databaseURL': 'https://creditapp-tm-default-rtdb.firebaseio.com/'
+    })
 
-db_url = st.text_input("Realtime Database URL", value=DEFAULT_DB_URL)
+# Firebase reference for credit_requests
+ref = db.reference('credit_requests')
+
+# Build lookup of Customer Number → EDI Service Provider
+@st.cache_data(show_spinner=False)
+def get_edi_lookup() -> dict:
+    data = ref.get() or {}
+    lookup = {}
+    for _, rec in data.items():
+        cust = str(rec.get("Customer Number", "")).strip().upper()
+        edi = str(rec.get("EDI Service Provider", "")).strip()
+        if cust and edi:
+            lookup[cust] = edi
+    return lookup
+
+edi_lookup = get_edi_lookup()
+st.success(f"✅ Firebase connected — {len(edi_lookup)} EDI records loaded.")
 
 # ------------------------------
 # Helpers
