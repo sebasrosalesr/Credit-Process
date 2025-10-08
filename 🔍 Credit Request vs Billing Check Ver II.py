@@ -101,6 +101,14 @@ billing_file = st.file_uploader(
     key="billing",
 )
 
+st.subheader("🧩 Upload EDI Trading Partner Mapping (Customer Account ↔ EDI Service Provider)")
+mapping_file = st.file_uploader(
+    "Upload the EDI Mapping Excel (must include 'Customer Account' and 'EDI Service Provider')",
+    type=["xlsx", "xlsm", "xls"],
+    key="mapping",
+    help="Used to fill EDI when Firebase has no mapping for a Customer Number."
+)
+
 # ------------------------------
 # Processing
 # ------------------------------
@@ -180,20 +188,60 @@ if credit_file and billing_file:
             df_matches["Customer Number"] = df_matches["Customer Number"].fillna(df_credit["Customer Number"])
 
         # ------------------------------
-        # EDI enrichment from Firebase (using cached lookup)
+        # EDI enrichment from Firebase (primary)
         # ------------------------------
         if "Customer Number" in df_matches.columns and len(edi_lookup) > 0:
-            df_matches["EDI Service Provider"] = (
-                df_matches["Customer Number"]
-                .astype(str)
-                .str.strip()
-                .str.upper()
-                .map(edi_lookup)
-                .fillna("")
+            df_matches["Customer Number (norm)"] = (
+                df_matches["Customer Number"].astype(str).str.strip().str.upper()
             )
-            df_matches["Has EDI?"] = df_matches["EDI Service Provider"].ne("")
+            df_matches["EDI Service Provider"] = df_matches["Customer Number (norm)"].map(edi_lookup).fillna("")
+            df_matches["EDI Source"] = df_matches["EDI Service Provider"].apply(lambda v: "Firebase" if v else "")
         else:
-            st.warning("⚠️ 'Customer Number' column missing or EDI lookup is empty; skipping EDI enrichment.")
+            st.warning("⚠️ 'Customer Number' column missing or EDI lookup is empty; skipping Firebase enrichment.")
+            df_matches["EDI Service Provider"] = ""
+            df_matches["EDI Source"] = ""
+
+        # ------------------------------
+        # EDI enrichment from Mapping Excel (fallback)
+        # ------------------------------
+        if mapping_file is not None:
+            try:
+                df_map_raw = pd.read_excel(mapping_file, engine="openpyxl")
+                map_candidates = {
+                    "Customer Account": ["Customer Account", "Customer", "Account", "Acct", "CustomerAccount"],
+                    "EDI Service Provider": ["EDI Service Provider", "EDI Provider", "EDI Service", "EDI"]
+                }
+                df_map = remap_columns(df_map_raw.copy(), map_candidates)
+
+                require_columns(df_map, ["Customer Account", "EDI Service Provider"], "EDI Mapping")
+
+                # Normalize keys for reliable matching
+                df_map["Customer Account (norm)"] = df_map["Customer Account"].astype(str).str.strip().str.upper()
+                df_map = df_map.drop_duplicates(subset=["Customer Account (norm)"], keep="first")
+
+                # Build mapping lookup
+                map_lookup = dict(
+                    zip(df_map["Customer Account (norm)"], df_map["EDI Service Provider"].astype(str).str.strip())
+                )
+
+                # Fill only where EDI is still empty after Firebase lookup
+                needs_fill = df_matches["EDI Service Provider"].eq("")
+                df_matches.loc[needs_fill, "EDI Service Provider"] = (
+                    df_matches.loc[needs_fill, "Customer Number (norm)"].map(map_lookup).fillna("")
+                )
+                # Mark source where we filled from Excel mapping
+                df_matches.loc[
+                    needs_fill & df_matches["EDI Service Provider"].ne(""),
+                    "EDI Source"
+                ] = "Excel Mapping"
+
+            except Exception as e:
+                st.warning(f"⚠️ Skipping Excel mapping enrichment due to error: {e}")
+        else:
+            st.info("ℹ️ Upload the EDI Mapping file to enrich missing EDIs via Customer Account.")
+
+        # Final flags
+        df_matches["Has EDI?"] = df_matches["EDI Service Provider"].ne("")
 
         # Nice column order (keys first, then RTN & EDI)
         preferred_order = [
@@ -209,18 +257,22 @@ if credit_file and billing_file:
             "Reason for Credit",
             "RTN/CR No.",
             "EDI Service Provider",
+            "EDI Source",
             "Has EDI?",
         ]
+        # Keep normalized helper out of the CSV/table
+        helper_cols = ["Customer Number (norm)"]
+
         ordered_cols = [c for c in preferred_order if c in df_matches.columns]
-        remaining_cols = [c for c in df_matches.columns if c not in ordered_cols]
-        df_matches = df_matches[ordered_cols + remaining_cols]
+        remaining_cols = [c for c in df_matches.columns if c not in ordered_cols + helper_cols]
+        df_display = df_matches[ordered_cols + remaining_cols]
 
         # Display
-        st.success(f"✅ Found {len(df_matches)} matching records.")
-        st.dataframe(df_matches, use_container_width=True)
+        st.success(f"✅ Found {len(df_display)} matching records.")
+        st.dataframe(df_display, use_container_width=True)
 
         # Download
-        csv = df_matches.to_csv(index=False).encode("utf-8")
+        csv = df_display.to_csv(index=False).encode("utf-8")
         st.download_button("📥 Download Matches as CSV", csv, "matched_records.csv", "text/csv")
 
         if not has_rtn:
