@@ -1,5 +1,11 @@
 import streamlit as st
 import pandas as pd
+import json
+import os
+
+# Optional: only import firebase if we'll use it
+import firebase_admin
+from firebase_admin import credentials, db
 
 # ------------------------------
 # Page & Header
@@ -7,6 +13,25 @@ import pandas as pd
 st.set_page_config(page_title="Credit Request vs Billing Check", layout="wide")
 st.title("🔍 Credit Request vs Billing Check")
 st.header("Step 1: Upload Files")
+
+# ------------------------------
+# Firebase Settings (edit or set via UI)
+# ------------------------------
+st.subheader("⚙️ Firebase Connection (for EDI)")
+use_firebase = st.checkbox("Enable Firebase EDI lookup", value=True, help="Uncheck to skip EDI enrichment")
+
+# Option A: paste your known paths (for local use / server)
+DEFAULT_DB_URL = "https://creditapp-tm-default-rtdb.firebaseio.com/"
+SERVICE_ACCOUNT_PATH = st.text_input(
+    "Service account JSON path (leave blank if uploading JSON below)",
+    value="",
+    placeholder="/path/to/serviceAccount.json",
+)
+
+# Option B: upload service account JSON securely
+uploaded_sa = st.file_uploader("Or upload Service Account JSON", type=["json"], key="sa_json", help="If provided, takes precedence over the path above.")
+
+db_url = st.text_input("Realtime Database URL", value=DEFAULT_DB_URL)
 
 # ------------------------------
 # Helpers
@@ -24,22 +49,18 @@ def normalize_id_series(s: pd.Series) -> pd.Series:
          .str.replace(r"\.0$", "", regex=True)
     )
 
+def _norm(s: str) -> str:
+    return str(s).strip().upper() if pd.notna(s) else ""
+
 def remap_columns(df: pd.DataFrame, candidates: dict) -> pd.DataFrame:
     """
     Remap any present candidate names to a canonical column name.
-    `candidates` example:
-        {
-          "Invoice Number": ["Invoice Number", "Doc No", "Document No", "Invoice", "INV No", "INV_NO"],
-          "Item Number":    ["Item Number", "Item No.", "Item ID", "Item", "ITEM_NO"]
-        }
     """
     rename_map = {}
     cols_lower = {c.lower(): c for c in df.columns}  # original -> preserve case
-
     for target, options in candidates.items():
         found = None
         for opt in options:
-            # try exact, case-insensitive, and stripped matching
             if opt in df.columns:
                 found = opt
                 break
@@ -56,6 +77,48 @@ def require_columns(df: pd.DataFrame, needed: list, context_name: str):
         raise ValueError(
             f"❌ Required columns {missing} were not found in {context_name} (after remapping)."
         )
+
+def init_firebase_and_get_lookup(sa_bytes: bytes | None, sa_path: str | None, database_url: str) -> dict:
+    """
+    Initialize Firebase, fetch credit_requests, and build a Customer Number -> EDI Service Provider lookup.
+    Prefers a non-empty EDI value when multiple records share the same Customer Number.
+    """
+    # Reset app to allow changing URLs/keys during dev session
+    try:
+        firebase_admin.delete_app(firebase_admin.get_app())
+    except ValueError:
+        pass
+
+    # Service account from bytes (uploaded) or from path
+    if sa_bytes:
+        # Save uploaded JSON to a temp file
+        tmp_path = "sa_tmp.json"
+        with open(tmp_path, "wb") as f:
+            f.write(sa_bytes)
+        cred = credentials.Certificate(tmp_path)
+    elif sa_path and os.path.exists(sa_path):
+        cred = credentials.Certificate(sa_path)
+    else:
+        raise ValueError("No valid service account provided: upload a JSON or set a valid file path.")
+
+    firebase_admin.initialize_app(cred, {"databaseURL": database_url})
+    ref = db.reference("credit_requests")
+    data = ref.get() or {}
+
+    # Build lookup dict
+    lookup = {}
+    for _, rec in (data or {}).items():
+        cust = _norm(rec.get("Customer Number", ""))
+        edi = str(rec.get("EDI Service Provider", "")).strip()
+        if not cust:
+            continue
+        # Prefer to keep an existing non-empty EDI; fill missing if not present
+        if edi:
+            if cust not in lookup or not lookup[cust]:
+                lookup[cust] = edi
+        else:
+            lookup.setdefault(cust, "")
+    return lookup
 
 # ------------------------------
 # Uploaders
@@ -79,7 +142,7 @@ billing_file = st.file_uploader(
 # ------------------------------
 if credit_file and billing_file:
     try:
-        # Load
+        # Load Excels
         df_credit_raw = pd.read_excel(credit_file, engine="openpyxl")
         df_billing_raw = pd.read_excel(billing_file, engine="openpyxl")
 
@@ -87,7 +150,8 @@ if credit_file and billing_file:
         credit_candidates = {
             "Invoice Number": ["Invoice Number", "Doc No", "Document No", "Invoice", "INV No", "INV_NO"],
             "Item Number":    ["Item Number", "Item No.", "Item No", "Item ID", "Item", "ITEM_NO"],
-            # Optional fields commonly present in the credit form:
+            "Customer Number":["Customer Number", "Customer", "Cust No", "Cust #", "Customer ID", "Customer_ID"],
+            # Optional common fields
             "QTY":            ["QTY", "Quantity"],
             "Unit Price":     ["Unit Price", "Price", "UnitPrice"],
             "Extended Price": ["Extended Price", "ExtendedPrice", "Ext Price"],
@@ -100,8 +164,7 @@ if credit_file and billing_file:
             "Invoice Number": ["Invoice Number", "Doc No", "Document No", "Invoice", "INV No", "INV_NO"],
             "Item Number":    ["Item Number", "Item No.", "Item No", "Item ID", "Item", "ITEM_NO"],
             "RTN/CR No.":     ["RTN/CR No.", "RTN_CR_No", "RTN CR No", "Return/Credit No", "RTN_CR_No."],
-            # add other useful billing fields if desired:
-            "Customer Number": ["Customer Number", "Customer", "Cust No", "Cust #"],
+            "Customer Number":["Customer Number", "Customer", "Cust No", "Cust #", "Customer ID", "Customer_ID"],
         }
 
         df_credit = remap_columns(df_credit_raw.copy(), credit_candidates)
@@ -140,13 +203,36 @@ if credit_file and billing_file:
         has_rtn = "RTN/CR No." in df_billing.columns
         merge_cols = ["Invoice Number", "Item Number"] + (["RTN/CR No."] if has_rtn else [])
         df_matches = df_matches.merge(
-            df_billing[merge_cols],
+            df_billing[merge_cols + (["Customer Number"] if "Customer Number" in df_billing.columns else [])],
             on=["Invoice Number", "Item Number"],
             how="left",
             validate="m:1"
         )
 
-        # Nice column order (show the keys early + RTN)
+        # If Customer Number exists in credit but not billing, prefer credit
+        if "Customer Number" in df_credit.columns:
+            df_matches["Customer Number"] = df_matches["Customer Number"].fillna(df_credit["Customer Number"])
+
+        # ------------------------------
+        # EDI enrichment from Firebase
+        # ------------------------------
+        if use_firebase:
+            try:
+                sa_bytes = uploaded_sa.read() if uploaded_sa else None
+                sa_path = SERVICE_ACCOUNT_PATH if SERVICE_ACCOUNT_PATH.strip() else None
+                edi_lookup = init_firebase_and_get_lookup(sa_bytes, sa_path, db_url)
+
+                # Use normalized Customer Number for lookup
+                if "Customer Number" in df_matches.columns:
+                    cust_norm = df_matches["Customer Number"].astype(str).map(_norm)
+                    df_matches["EDI Service Provider"] = cust_norm.map(lambda x: edi_lookup.get(x, ""))
+                    df_matches["Has EDI?"] = df_matches["EDI Service Provider"].astype(str).str.len().gt(0)
+                else:
+                    st.warning("⚠️ No 'Customer Number' column found after remapping; cannot enrich EDI.")
+            except Exception as e:
+                st.warning(f"⚠️ Skipping EDI enrichment due to Firebase error: {e}")
+
+        # Nice column order (show the keys early + RTN + EDI)
         preferred_order = [
             "Customer Number",
             "Invoice Number",
@@ -158,7 +244,9 @@ if credit_file and billing_file:
             "Credit Request Total",
             "Requested By",
             "Reason for Credit",
-            "RTN/CR No.",  # from billing
+            "RTN/CR No.",            # from billing (if present)
+            "EDI Service Provider",  # from Firebase (if enabled)
+            "Has EDI?",
         ]
         ordered_cols = [c for c in preferred_order if c in df_matches.columns]
         remaining_cols = [c for c in df_matches.columns if c not in ordered_cols]
