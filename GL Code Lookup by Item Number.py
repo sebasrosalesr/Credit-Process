@@ -1,12 +1,11 @@
 # streamlit_app.py
 import re
-import io
 import pandas as pd
 import streamlit as st
 
 st.set_page_config(page_title="GL Code Lookup by Item", layout="wide")
 st.title("🔎 GL Code Lookup by Item Number")
-st.caption("Paste item numbers, upload your Customer Master, and get GL Code + Class mapping.")
+st.caption("Paste item numbers, upload your Item Master, and get GL Code + Class mapping.")
 
 # -----------------------------
 # 1) Hard-coded Item Class → GL Code table (from your image)
@@ -31,13 +30,10 @@ CLASS_TABLE = pd.DataFrame([
 # 2) Helpers
 # -----------------------------
 def normalize_colname(s: str) -> str:
+    import re
     return re.sub(r"[^a-z0-9]+", " ", str(s).strip().lower()).strip()
 
 def pick_column(df: pd.DataFrame, candidates: list[str], fallback_index: int | None = None):
-    """
-    Try to find a column by name (case/space tolerant). If not found and fallback_index is set,
-    return the column at that 0-based index (e.g., 0 -> column A, 3 -> column D).
-    """
     norm_map = {c: normalize_colname(c) for c in df.columns}
     for col, norm in norm_map.items():
         if norm in candidates:
@@ -47,38 +43,28 @@ def pick_column(df: pd.DataFrame, candidates: list[str], fallback_index: int | N
     return None
 
 def parse_item_numbers(raw: str) -> list[str]:
-    # split on commas, semicolons, newlines, tabs, and spaces—but keep hyphens/letters/digits
+    import re
     tokens = re.split(r"[,\n;\t ]+", raw.strip())
-    items = []
+    items, seen = [], set()
     for t in tokens:
         t = t.strip()
-        if not t:
-            continue
-        # Keep as-is (item numbers can have letters, dashes, etc.)
-        items.append(t)
-    # Preserve order but unique
-    seen, out = set(), []
-    for x in items:
-        if x not in seen:
-            seen.add(x)
-            out.append(x)
-    return out
+        if t and t not in seen:
+            seen.add(t); items.append(t)
+    return items
 
-def load_customer_master(upload) -> pd.DataFrame:
-    # Supports Excel and CSV
+def load_item_master(upload) -> pd.DataFrame:
+    """Load Item Master (Excel/CSV)."""
     name = upload.name.lower()
     if name.endswith((".xlsx", ".xlsm", ".xls")):
-        df = pd.read_excel(upload, engine="openpyxl")
-    elif name.endswith(".csv"):
-        df = pd.read_csv(upload)
-    else:
-        # try excel by default
-        try:
-            df = pd.read_excel(upload, engine="openpyxl")
-        except Exception:
-            upload.seek(0)
-            df = pd.read_csv(upload)
-    return df
+        return pd.read_excel(upload, engine="openpyxl")
+    if name.endswith(".csv"):
+        return pd.read_csv(upload)
+    # Try Excel then CSV
+    try:
+        return pd.read_excel(upload, engine="openpyxl")
+    except Exception:
+        upload.seek(0)
+        return pd.read_csv(upload)
 
 # -----------------------------
 # 3) UI: Inputs
@@ -94,8 +80,8 @@ with left:
     st.caption("You can paste one per line, or separated by commas/spaces.")
 
 with right:
-    cm_file = st.file_uploader(
-        "📄 Upload Customer Master (Excel/CSV)",
+    im_file = st.file_uploader(
+        "📄 Upload Item Master (Excel/CSV)",
         type=["xlsx","xlsm","xls","csv"],
         help="Must contain Item Number in column A (or a column named 'Item Number') and Item Class ID in column D (or a column named like 'Item Class ID')."
     )
@@ -103,62 +89,55 @@ with right:
 # -----------------------------
 # 4) Process
 # -----------------------------
-if raw_items and cm_file:
+if raw_items and im_file:
     try:
         items = parse_item_numbers(raw_items)
         st.write(f"**Items detected:** {len(items)}")
-        st.code(", ".join(items) if len(items) <= 30 else f"{', '.join(items[:30])}, …")
+        st.code(", ".join(items[:30]) + (" …" if len(items) > 30 else ""))
 
-        df_cm = load_customer_master(cm_file)
-        if df_cm.empty:
-            st.error("Uploaded file seems empty.")
+        df_im = load_item_master(im_file)
+        if df_im.empty:
+            st.error("Uploaded Item Master seems empty.")
             st.stop()
 
-        # Try to locate columns
+        # Locate columns in Item Master
         item_col = pick_column(
-            df_cm,
-            candidates=[
-                "item number", "item #", "item id", "item", "number", "sku", "itemno", "itemnum"
-            ],
+            df_im,
+            candidates=["item number", "item #", "item id", "item", "number", "sku", "itemno", "itemnum"],
             fallback_index=0  # Column A
         )
         class_col = pick_column(
-            df_cm,
+            df_im,
             candidates=["item class id", "item class", "class id", "class"],
             fallback_index=3  # Column D
         )
         desc_col = pick_column(
-            df_cm,
+            df_im,
             candidates=["description", "item description", "item name", "desc"],
             fallback_index=None
         )
 
         missing = [n for n,(v) in [("Item # (A)", item_col), ("Item Class ID (D)", class_col)] if v is None]
         if missing:
-            st.error(f"Could not find required column(s): {', '.join(missing)}.")
+            st.error(f"Could not find required column(s) in Item Master: {', '.join(missing)}.")
             st.stop()
 
-        # Keep only the columns we need
         keep_cols = [c for c in [item_col, desc_col, class_col] if c is not None]
-        df_cm = df_cm[keep_cols].copy()
+        df_im = df_im[keep_cols].copy()
 
-        # Rename to standard names
         rename_map = {}
         if item_col: rename_map[item_col] = "Item #"
         if desc_col: rename_map[desc_col] = "Description"
         if class_col: rename_map[class_col] = "Item Class ID"
-        df_cm = df_cm.rename(columns=rename_map)
+        df_im = df_im.rename(columns=rename_map)
 
-        # Filter by requested items
-        df_filtered = df_cm[df_cm["Item #"].astype(str).isin(items)].copy()
+        df_filtered = df_im[df_im["Item #"].astype(str).isin(items)].copy()
         if df_filtered.empty:
-            st.warning("No matching Item Numbers found in the uploaded Customer Master.")
+            st.warning("No matching Item Numbers found in the uploaded Item Master.")
             st.stop()
 
-        # Merge with hard-coded table
         df_out = df_filtered.merge(CLASS_TABLE, on="Item Class ID", how="left")
 
-        # Reorder & final columns
         for col in ["Description", "Item Class Description", "GL Code"]:
             if col not in df_out.columns:
                 df_out[col] = None
@@ -168,7 +147,6 @@ if raw_items and cm_file:
         st.subheader("✅ Results")
         st.dataframe(df_out, use_container_width=True)
 
-        # Download
         csv = df_out.to_csv(index=False).encode("utf-8")
         st.download_button("⬇️ Download CSV", data=csv, file_name="gl_code_lookup_results.csv", mime="text/csv")
 
@@ -182,5 +160,5 @@ if raw_items and cm_file:
 
 elif not raw_items:
     st.info("Paste your Item Numbers to begin.")
-elif not cm_file:
-    st.info("Upload your Customer Master to continue.")
+elif not im_file:
+    st.info("Upload your Item Master to continue.")
