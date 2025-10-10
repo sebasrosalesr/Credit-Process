@@ -114,7 +114,7 @@ if raw_items and im_file:
         desc_col = pick_column(
             df_im,
             candidates=["description", "item description", "item name", "desc"],
-            fallback_index=None
+            fallback_index=1
         )
 
         missing = [n for n,(v) in [("Item # (A)", item_col), ("Item Class ID (D)", class_col)] if v is None]
