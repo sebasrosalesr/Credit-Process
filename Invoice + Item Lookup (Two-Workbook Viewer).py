@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 
 st.set_page_config(page_title="Credit Comparison", layout="wide")
-st.title("🧮 Credit Comparison — Requestor vs Updated Calculator")
+st.title("🧮 Credit Comparison — Requestor vs Updated Calculator (Exact Match)")
 
 # ---------------- helpers ----------------
 def norm_invoice(x: str) -> str:
@@ -18,7 +18,6 @@ def norm_item(x: str) -> str:
     return s
 
 def to_number(x):
-    """Convert currency/strings to float; NaN -> 0 (or None if you prefer)."""
     if pd.isna(x): return 0.0
     s = str(x).replace(",", "").replace("$", "").strip()
     try:
@@ -26,43 +25,73 @@ def to_number(x):
     except Exception:
         return 0.0
 
+def norm_name(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(s).lower())
+
 def fuzzy_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
-    """Pick the first column whose normalized name matches any candidate."""
-    def norm(s): return re.sub(r"[^a-z0-9]", "", str(s).lower())
-    cols = {norm(c): c for c in df.columns}
-    for want in candidates:
-        c = cols.get(norm(want))
-        if c: return c
+    """
+    Find a column by normalized name. Works for variants like:
+    'Credit_AM', 'Credit AMT', 'Credit Amount', 'credit_amt', etc.
+    """
+    want_set = {norm_name(c) for c in candidates}
+    # exact normalized match
+    for c in df.columns:
+        if norm_name(c) in want_set:
+            return c
+    # contains match (fallback)
+    for c in df.columns:
+        n = norm_name(c)
+        if any(w in n for w in want_set):
+            return c
     return None
 
-def read_tabular(uploaded):
-    if uploaded.name.lower().endswith(".csv"):
+def read_any_excel(uploaded) -> pd.DataFrame | None:
+    if uploaded is None:
+        return None
+    name = getattr(uploaded, "name", "file")
+    if name.lower().endswith(".csv"):
         return pd.read_csv(uploaded)
-    return pd.read_excel(uploaded)
+    try:
+        xls = pd.ExcelFile(uploaded)
+        sheet = st.selectbox(
+            f"Select sheet for **{name}**",
+            xls.sheet_names,
+            index=0,
+            key=f"sheet_{name}",
+        )
+        return pd.read_excel(xls, sheet_name=sheet)
+    except Exception as e:
+        st.error(f"Could not read {name}: {e}")
+        return None
 
 def download_csv(df: pd.DataFrame, filename: str, label: str):
     buf = io.StringIO()
     df.to_csv(buf, index=False)
     st.download_button(label, data=buf.getvalue(), file_name=filename, mime="text/csv")
 
+def money(x: float) -> str:
+    return f"${x:,.2f}"
+
 # ---------------- inputs ----------------
 c1, c2 = st.columns(2)
 with c1:
-    req_file = st.file_uploader("📥 Requestor file (e.g., *Pricing Credits.xlsx* or template)", type=["xlsx","xls","csv"])
+    req_file = st.file_uploader("📥 Requestor file (e.g., Pricing Credits.xlsx / Template)", type=["xlsx","xls","csv"])
 with c2:
     calc_file = st.file_uploader("📥 Updated Credits Calculator file", type=["xlsx","xls","csv"])
 
 with st.expander("⚙️ Column mapping (auto-detected; edit if needed)"):
-    st.caption("We’ll try to find these; adjust if your headers differ.")
+    st.caption("We try to detect common header variants. Adjust here if yours differ.")
+    # Requestor guesses
     req_inv_label  = st.text_input("Requestor: Invoice column", value="Invoice Number")
     req_item_label = st.text_input("Requestor: Item column", value="Item Number")
     req_amt_label  = st.text_input("Requestor: Credit amount column", value="Credit Request Total")
-
+    # Calculator guesses
     calc_inv_label  = st.text_input("Calculator: Invoice column", value="Invoice_No")
     calc_item_label = st.text_input("Calculator: Item column", value="Item_No")
+    # NOTE: handle many variants of "Credit amount"
     calc_amt_label  = st.text_input("Calculator: Credit amount column", value="Credit_AM")
 
-tol = st.number_input("Amount tolerance (treat differences ≤ tolerance as equal)", min_value=0.0, value=0.01, step=0.01)
+st.markdown("")
 
 # ---------------- run ----------------
 if st.button("🔎 Compare"):
@@ -70,120 +99,142 @@ if st.button("🔎 Compare"):
         st.warning("Upload both files to run the comparison.")
         st.stop()
 
-    # Read
-    req_df  = read_tabular(req_file)
-    calc_df = read_tabular(calc_file)
+    # Read + let user pick sheet
+    req_df  = read_any_excel(req_file)
+    calc_df = read_any_excel(calc_file)
+    if req_df is None or calc_df is None:
+        st.stop()
 
-    # Detect columns
-    req_inv_col  = fuzzy_col(req_df, [req_inv_label, "Invoice Number", "Invoice_Number", "Invoice"])
-    req_item_col = fuzzy_col(req_df, [req_item_label, "Item Number", "Item_Number", "Item No", "Item_No"])
-    req_amt_col  = fuzzy_col(req_df, [req_amt_label, "Credit Request Total", "Credit_Total", "Credit Amount"])
+    # Detect columns with lots of aliases
+    req_inv_col  = fuzzy_col(req_df,  [req_inv_label, "Invoice Number", "Invoice_Number", "InvoiceNo", "Invoice"])
+    req_item_col = fuzzy_col(req_df,  [req_item_label, "Item Number", "Item_Number", "ItemNo", "Item_No", "Item"])
+    req_amt_col  = fuzzy_col(req_df,  [req_amt_label, "Credit Request Total", "Credit_Total", "Credit Amount", "Amount", "Total"])
 
-    calc_inv_col  = fuzzy_col(calc_df, [calc_inv_label, "Invoice_No", "Invoice Number", "Invoice"])
-    calc_item_col = fuzzy_col(calc_df, [calc_item_label, "Item_No", "Item Number", "Item"])
-    calc_amt_col  = fuzzy_col(calc_df, [calc_amt_label, "Credit_AM", "Credit Amount", "Credit"])
+    calc_inv_col  = fuzzy_col(calc_df, [calc_inv_label, "Invoice_No", "Invoice Number", "Invoice_Number", "InvoiceNo", "Invoice"])
+    calc_item_col = fuzzy_col(calc_df, [calc_item_label, "Item_No", "Item Number", "Item_Number", "ItemNo", "Item"])
+    calc_amt_col  = fuzzy_col(calc_df, [calc_amt_label, "Credit_AM", "Credit AMT", "Credit Amt", "Credit Amount", "CreditAmount", "Credit"])
 
     missing = [name for name, col in [
-        ("Requestor: Invoice", req_inv_col),
-        ("Requestor: Item", req_item_col),
-        ("Requestor: Amount", req_amt_col),
-        ("Calculator: Invoice", calc_inv_col),
-        ("Calculator: Item", calc_item_col),
-        ("Calculator: Amount", calc_amt_col),
+        ("Requestor: Invoice",   req_inv_col),
+        ("Requestor: Item",      req_item_col),
+        ("Requestor: Amount",    req_amt_col),
+        ("Calculator: Invoice",  calc_inv_col),
+        ("Calculator: Item",     calc_item_col),
+        ("Calculator: Amount",   calc_amt_col),
     ] if col is None]
 
     if missing:
         st.error("Could not find columns: " + ", ".join(missing))
+        st.caption("Tip: pick the right sheet above, or edit the mapping names in the expander.")
         st.stop()
 
     # Normalize & prep keys
     req = req_df.copy()
-    req["_inv"]  = req[req_inv_col].map(norm_invoice)
-    req["_item"] = req[req_item_col].map(norm_item)
-    req["_amt_req"] = req[req_amt_col].map(to_number)
+    req["_inv"]      = req[req_inv_col].map(norm_invoice)
+    req["_item"]     = req[req_item_col].map(norm_item)
+    req["_amt_req"]  = req[req_amt_col].map(to_number)
 
     calc = calc_df.copy()
-    calc["_inv"]  = calc[calc_inv_col].map(norm_invoice)
-    calc["_item"] = calc[calc_item_col].map(norm_item)
+    calc["_inv"]      = calc[calc_inv_col].map(norm_invoice)
+    calc["_item"]     = calc[calc_item_col].map(norm_item)
     calc["_amt_calc"] = calc[calc_amt_col].map(to_number)
 
-    # --- INNER MERGE (matched) ---
+    # Totals for KPI
+    req_total_rows  = int(len(req))
+    calc_total_rows = int(len(calc))
+    req_total_amt   = float(req["_amt_req"].sum())
+    calc_total_amt  = float(calc["_amt_calc"].sum())
+
+    # --- INNER MERGE (matched keys) ---
     matched = pd.merge(
         req, calc,
         on=["_inv","_item"],
         how="inner",
         suffixes=("_req","_calc")
     )
+    matched_count = int(len(matched))
 
-    if matched.empty:
-        st.warning("No matches found on Invoice + Item. Check headers or normalization.")
-    else:
-        matched["diff"] = matched["_amt_req"] - matched["_amt_calc"]
-        matched["match_status"] = matched["diff"].abs() <= tol
+    # exact equality (no tolerance)
+    matched["diff"] = matched["_amt_req"] - matched["_amt_calc"]
+    matched["match_status"] = matched["diff"] == 0
 
-        # Nice presentation slices per your spec
-        req_slice = matched[[req_inv_col, req_item_col] +
-                            list(req.columns[list(req.columns).index(req_inv_col)+1 : list(req.columns).index(req_amt_col)+1])].copy()
-        calc_slice = matched[[calc_inv_col, calc_item_col] +
-                             list(calc.columns[list(calc.columns).index(calc_inv_col)+1 : list(calc.columns).index(calc_amt_col)+1])].copy()
-
-        # Results sections
-        st.subheader("✅ Exact/Within Tolerance Matches")
-        exact = matched[matched["match_status"]].copy()
-        if exact.empty:
-            st.info("No amounts matched within tolerance.")
-        else:
-            show_cols = [
-                req_inv_col, req_item_col,
-                req_amt_col, calc_amt_col, "diff"
-            ]
-            nice = exact.rename(columns={
-                req_amt_col: "Request_Amount",
-                calc_amt_col: "Calculated_Amount"
-            })[show_cols].sort_values([req_inv_col, req_item_col])
-            st.dataframe(nice, use_container_width=True)
-            download_csv(nice, "matched_equal.csv", "⬇️ Download matched (equal)")
-
-        st.subheader("⚠️ Discrepancies (Amounts differ beyond tolerance)")
-        bad = matched[~matched["match_status"]].copy()
-        if bad.empty:
-            st.info("No discrepancies found.")
-        else:
-            show_cols = [
-                req_inv_col, req_item_col,
-                req_amt_col, calc_amt_col, "diff"
-            ]
-            issues = bad.rename(columns={
-                req_amt_col: "Request_Amount",
-                calc_amt_col: "Calculated_Amount"
-            })[show_cols].sort_values([req_inv_col, req_item_col])
-            st.dataframe(issues, use_container_width=True)
-            download_csv(issues, "discrepancies.csv", "⬇️ Download discrepancies")
+    exact = matched[matched["match_status"]].copy()
+    bad   = matched[~matched["match_status"]].copy()
 
     # --- UNMATCHED on either side ---
     req_keys  = req[["_inv","_item"]].drop_duplicates()
     calc_keys = calc[["_inv","_item"]].drop_duplicates()
 
-    only_req_keys  = pd.merge(req_keys,  calc_keys, on=["_inv","_item"], how="left", indicator=True)
-    only_req_keys  = only_req_keys[only_req_keys["_merge"]=="left_only"].drop(columns=["_merge"])
+    only_req  = pd.merge(req_keys,  calc_keys, on=["_inv","_item"], how="left", indicator=True)
+    only_req  = only_req[only_req["_merge"]=="left_only"].drop(columns=["_merge"])
+    only_calc = pd.merge(calc_keys, req_keys,   on=["_inv","_item"], how="left", indicator=True)
+    only_calc = only_calc[only_calc["_merge"]=="left_only"].drop(columns=["_merge"])
 
-    only_calc_keys = pd.merge(calc_keys, req_keys,   on=["_inv","_item"], how="left", indicator=True)
-    only_calc_keys = only_calc_keys[only_calc_keys["_merge"]=="left_only"].drop(columns=["_merge"])
+    unmatched_req_count  = int(len(only_req))
+    unmatched_calc_count = int(len(only_calc))
+
+    # KPI metrics
+    matched_amt_sum = float(exact["_amt_req"].sum())
+    discrep_count   = int(len(bad))
+    discrep_amt_abs = float(bad["diff"].abs().sum())
+    net_diff_matched = float(matched["_amt_req"].sum() - matched["_amt_calc"].sum())
+
+    a,b,c,d,e,f = st.columns(6)
+    a.metric("✅ Matched pairs", matched_count)
+    b.metric("⚠️ Discrepancies", discrep_count)
+    c.metric("🧩 Unmatched in Requestor", unmatched_req_count)
+    d.metric("🧩 Unmatched in Calculator", unmatched_calc_count)
+    e.metric("Σ Request $",  money(req_total_amt))
+    f.metric("Σ Calculator $", money(calc_total_amt))
+    st.caption(f"Matched $ (exact equal): **{money(matched_amt_sum)}** · "
+               f"Total absolute discrepancy on matched: **{money(discrep_amt_abs)}** · "
+               f"Net diff on matched (Req - Calc): **{money(net_diff_matched)}**")
+
+    st.markdown("---")
+
+    # Tables
+    st.subheader("✅ Exact Matches")
+    if exact.empty:
+        st.info("No exact amount matches.")
+    else:
+        show_cols = [
+            req_inv_col, req_item_col, req_amt_col, calc_amt_col, "diff"
+        ]
+        nice = exact.rename(columns={
+            req_amt_col: "Request_Amount",
+            calc_amt_col: "Calculated_Amount"
+        })[show_cols].sort_values([req_inv_col, req_item_col])
+        st.dataframe(nice, use_container_width=True)
+        download_csv(nice, "matched_exact.csv", "⬇️ Download matched (exact)")
+
+    st.subheader("⚠️ Discrepancies (Amounts differ)")
+    if bad.empty:
+        st.info("No discrepancies found.")
+    else:
+        show_cols = [
+            req_inv_col, req_item_col, req_amt_col, calc_amt_col, "diff"
+        ]
+        issues = bad.rename(columns={
+            req_amt_col: "Request_Amount",
+            calc_amt_col: "Calculated_Amount"
+        })[show_cols].sort_values([req_inv_col, req_item_col])
+        st.dataframe(issues, use_container_width=True)
+        download_csv(issues, "discrepancies.csv", "⬇️ Download discrepancies")
 
     st.subheader("🧩 Unmatched in Requestor (no calculator row)")
-    if only_req_keys.empty:
+    if only_req.empty:
         st.info("None 🎉")
     else:
-        unmatched_req = pd.merge(only_req_keys, req, on=["_inv","_item"], how="left")
+        unmatched_req = pd.merge(only_req, req, on=["_inv","_item"], how="left")
         show = unmatched_req[[req_inv_col, req_item_col, req_amt_col]].drop_duplicates()
         st.dataframe(show.sort_values([req_inv_col, req_item_col]), use_container_width=True)
         download_csv(show, "unmatched_in_requestor.csv", "⬇️ Download unmatched (requestor)")
 
     st.subheader("🧩 Unmatched in Calculator (no requestor row)")
-    if only_calc_keys.empty:
+    if only_calc.empty:
         st.info("None 🎉")
     else:
-        unmatched_calc = pd.merge(only_calc_keys, calc, on=["_inv","_item"], how="left")
+        unmatched_calc = pd.merge(only_calc, calc, on=["_inv","_item"], how="left")
         show = unmatched_calc[[calc_inv_col, calc_item_col, calc_amt_col]].drop_duplicates()
         st.dataframe(show.sort_values([calc_inv_col, calc_item_col]), use_container_width=True)
         download_csv(show, "unmatched_in_calculator.csv", "⬇️ Download unmatched (calculator)")
