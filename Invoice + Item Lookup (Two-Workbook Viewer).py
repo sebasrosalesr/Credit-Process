@@ -1,144 +1,189 @@
 # app.py
-import io
-import re
+import io, re
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Invoice/Item Lookup", layout="wide")
-st.title("🔎 Invoice + Item Lookup (Two-Workbook Viewer)")
+st.set_page_config(page_title="Credit Comparison", layout="wide")
+st.title("🧮 Credit Comparison — Requestor vs Updated Calculator")
 
-# --------------------- helpers ---------------------
+# ---------------- helpers ----------------
 def norm_invoice(x: str) -> str:
-    if x is None:
-        return ""
-    # keep letters+digits only, lower-case
+    if x is None: return ""
     return re.sub(r"[^a-z0-9]", "", str(x).strip().lower())
 
 def norm_item(x: str) -> str:
-    if x is None:
-        return ""
-    # normalize dashes to "-" and remove spaces; keep letters/digits/dash
+    if x is None: return ""
     s = str(x).strip().upper().replace("–", "-").replace("—", "-")
     s = re.sub(r"\s+", "", s)
-    s = re.sub(r"[^A-Z0-9\-_/]", "", s)
     return s
 
-def read_any_excel(uploaded) -> pd.DataFrame | None:
-    if not uploaded:
-        return None
+def to_number(x):
+    """Convert currency/strings to float; NaN -> 0 (or None if you prefer)."""
+    if pd.isna(x): return 0.0
+    s = str(x).replace(",", "").replace("$", "").strip()
     try:
-        xls = pd.ExcelFile(uploaded)
-        sheet = st.selectbox(
-            f"Select sheet for **{uploaded.name}**",
-            xls.sheet_names,
-            index=0,
-            key=f"sheet_{uploaded.name}",
-        )
-        return pd.read_excel(xls, sheet_name=sheet)
-    except Exception as e:
-        st.error(f"Could not read {getattr(uploaded,'name','file')}: {e}")
-        return None
+        return float(s)
+    except Exception:
+        return 0.0
 
-def get_col_index(df: pd.DataFrame, label: str) -> int | None:
-    """Find a column by fuzzy label (case/space/punct insensitive)."""
-    def norm_label(s: str) -> str:
-        return re.sub(r"[^a-z0-9]", "", s.lower())
-    wanted = norm_label(label)
-    for i, c in enumerate(df.columns):
-        if norm_label(str(c)) == wanted:
-            return i
+def fuzzy_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
+    """Pick the first column whose normalized name matches any candidate."""
+    def norm(s): return re.sub(r"[^a-z0-9]", "", str(s).lower())
+    cols = {norm(c): c for c in df.columns}
+    for want in candidates:
+        c = cols.get(norm(want))
+        if c: return c
     return None
 
-def slice_cols_range(df: pd.DataFrame, start_label: str, end_label: str) -> pd.DataFrame:
-    """Return df with columns from start_label..end_label (inclusive) by position."""
-    si = get_col_index(df, start_label)
-    ei = get_col_index(df, end_label)
-    if si is None or ei is None:
-        missing = []
-        if si is None: missing.append(start_label)
-        if ei is None: missing.append(end_label)
-        st.warning(f"Columns not found: {', '.join(missing)}. Showing all columns for debugging.")
-        return df
-    if si > ei:
-        si, ei = ei, si
-    return df.iloc[:, si:ei+1]
+def read_tabular(uploaded):
+    if uploaded.name.lower().endswith(".csv"):
+        return pd.read_csv(uploaded)
+    return pd.read_excel(uploaded)
 
-def filter_by_invoice_item(df: pd.DataFrame, inv_col_guess: str, item_col_guess: str,
-                           invoice_in: str, item_in: str) -> pd.DataFrame:
-    inv_i = get_col_index(df, inv_col_guess)
-    it_i  = get_col_index(df, item_col_guess)
-    if inv_i is None or it_i is None:
-        st.warning(f"Could not find `{inv_col_guess}` or `{item_col_guess}` in: {list(df.columns)}")
-        return pd.DataFrame(columns=df.columns)
-
-    df2 = df.copy()
-    df2["_inv_norm_"]  = df2.iloc[:, inv_i].map(norm_invoice)
-    df2["_item_norm_"] = df2.iloc[:, it_i].map(norm_item)
-
-    inv_norm  = norm_invoice(invoice_in)
-    item_norm = norm_item(item_in)
-
-    return df2[(df2["_inv_norm_"] == inv_norm) & (df2["_item_norm_"] == item_norm)].drop(columns=["_inv_norm_","_item_norm_"])
-
-def download_link(df: pd.DataFrame, filename: str, label: str):
+def download_csv(df: pd.DataFrame, filename: str, label: str):
     buf = io.StringIO()
     df.to_csv(buf, index=False)
-    st.download_button(label=label, data=buf.getvalue(), file_name=filename, mime="text/csv")
+    st.download_button(label, data=buf.getvalue(), file_name=filename, mime="text/csv")
 
-# --------------------- inputs ---------------------
-colL, colR = st.columns(2)
-with colL:
-    req_file = st.file_uploader("📥 Upload **Requestor Template** (Excel)", type=["xlsx", "xls", "csv"])
-with colR:
-    upd_file = st.file_uploader("📥 Upload **Updated Credit Calculation** (Excel)", type=["xlsx", "xls", "csv"])
+# ---------------- inputs ----------------
+c1, c2 = st.columns(2)
+with c1:
+    req_file = st.file_uploader("📥 Requestor file (e.g., *Pricing Credits.xlsx* or template)", type=["xlsx","xls","csv"])
+with c2:
+    calc_file = st.file_uploader("📥 Updated Credits Calculator file", type=["xlsx","xls","csv"])
 
-st.markdown("---")
-inv_in = st.text_input("📄 Invoice Number", placeholder="e.g., INV14165606")
-item_in = st.text_input("🔢 Item Number", placeholder="e.g., 005-503356")
+with st.expander("⚙️ Column mapping (auto-detected; edit if needed)"):
+    st.caption("We’ll try to find these; adjust if your headers differ.")
+    req_inv_label  = st.text_input("Requestor: Invoice column", value="Invoice Number")
+    req_item_label = st.text_input("Requestor: Item column", value="Item Number")
+    req_amt_label  = st.text_input("Requestor: Credit amount column", value="Credit Request Total")
 
-if st.button("Search"):
-    # ---------- Requestor Template ----------
-    if req_file:
-        if req_file.name.lower().endswith(".csv"):
-            req_df = pd.read_csv(req_file)
-        else:
-            req_df = read_any_excel(req_file)
-        if req_df is not None:
-            # The requestor template: display D..L (Invoice Number .. Reason for Credit)
-            # First filter by invoice+item using best-guess column names
-            req_filtered = filter_by_invoice_item(
-                req_df, inv_col_guess="Invoice Number", item_col_guess="Item Number",
-                invoice_in=inv_in, item_in=item_in
-            )
-            if req_filtered.empty:
-                st.info("No matching rows in **Requestor Template** for this invoice + item.")
-            else:
-                req_slice = slice_cols_range(req_filtered, "Invoice Number", "Reason for Credit")
-                st.subheader("📄 Requestor Template (Columns D–L)")
-                st.dataframe(req_slice, use_container_width=True)
-                download_link(req_slice, "requestor_D_to_L.csv", "⬇️ Download Requestor Slice")
+    calc_inv_label  = st.text_input("Calculator: Invoice column", value="Invoice_No")
+    calc_item_label = st.text_input("Calculator: Item column", value="Item_No")
+    calc_amt_label  = st.text_input("Calculator: Credit amount column", value="Credit_AM")
+
+tol = st.number_input("Amount tolerance (treat differences ≤ tolerance as equal)", min_value=0.0, value=0.01, step=0.01)
+
+# ---------------- run ----------------
+if st.button("🔎 Compare"):
+    if not req_file or not calc_file:
+        st.warning("Upload both files to run the comparison.")
+        st.stop()
+
+    # Read
+    req_df  = read_tabular(req_file)
+    calc_df = read_tabular(calc_file)
+
+    # Detect columns
+    req_inv_col  = fuzzy_col(req_df, [req_inv_label, "Invoice Number", "Invoice_Number", "Invoice"])
+    req_item_col = fuzzy_col(req_df, [req_item_label, "Item Number", "Item_Number", "Item No", "Item_No"])
+    req_amt_col  = fuzzy_col(req_df, [req_amt_label, "Credit Request Total", "Credit_Total", "Credit Amount"])
+
+    calc_inv_col  = fuzzy_col(calc_df, [calc_inv_label, "Invoice_No", "Invoice Number", "Invoice"])
+    calc_item_col = fuzzy_col(calc_df, [calc_item_label, "Item_No", "Item Number", "Item"])
+    calc_amt_col  = fuzzy_col(calc_df, [calc_amt_label, "Credit_AM", "Credit Amount", "Credit"])
+
+    missing = [name for name, col in [
+        ("Requestor: Invoice", req_inv_col),
+        ("Requestor: Item", req_item_col),
+        ("Requestor: Amount", req_amt_col),
+        ("Calculator: Invoice", calc_inv_col),
+        ("Calculator: Item", calc_item_col),
+        ("Calculator: Amount", calc_amt_col),
+    ] if col is None]
+
+    if missing:
+        st.error("Could not find columns: " + ", ".join(missing))
+        st.stop()
+
+    # Normalize & prep keys
+    req = req_df.copy()
+    req["_inv"]  = req[req_inv_col].map(norm_invoice)
+    req["_item"] = req[req_item_col].map(norm_item)
+    req["_amt_req"] = req[req_amt_col].map(to_number)
+
+    calc = calc_df.copy()
+    calc["_inv"]  = calc[calc_inv_col].map(norm_invoice)
+    calc["_item"] = calc[calc_item_col].map(norm_item)
+    calc["_amt_calc"] = calc[calc_amt_col].map(to_number)
+
+    # --- INNER MERGE (matched) ---
+    matched = pd.merge(
+        req, calc,
+        on=["_inv","_item"],
+        how="inner",
+        suffixes=("_req","_calc")
+    )
+
+    if matched.empty:
+        st.warning("No matches found on Invoice + Item. Check headers or normalization.")
     else:
-        st.warning("Upload the **Requestor Template**.")
+        matched["diff"] = matched["_amt_req"] - matched["_amt_calc"]
+        matched["match_status"] = matched["diff"].abs() <= tol
 
-    # ---------- Updated Credit Calculation ----------
-    if upd_file:
-        if upd_file.name.lower().endswith(".csv"):
-            upd_df = pd.read_csv(upd_file)
+        # Nice presentation slices per your spec
+        req_slice = matched[[req_inv_col, req_item_col] +
+                            list(req.columns[list(req.columns).index(req_inv_col)+1 : list(req.columns).index(req_amt_col)+1])].copy()
+        calc_slice = matched[[calc_inv_col, calc_item_col] +
+                             list(calc.columns[list(calc.columns).index(calc_inv_col)+1 : list(calc.columns).index(calc_amt_col)+1])].copy()
+
+        # Results sections
+        st.subheader("✅ Exact/Within Tolerance Matches")
+        exact = matched[matched["match_status"]].copy()
+        if exact.empty:
+            st.info("No amounts matched within tolerance.")
         else:
-            upd_df = read_any_excel(upd_file)
-        if upd_df is not None:
-            # The updated calc: display D..O (Subbed_QTY .. Credit_AM), filtered by invoice+item
-            # Guess invoice & item column labels as in your screenshot
-            upd_filtered = filter_by_invoice_item(
-                upd_df, inv_col_guess="Invoice_No", item_col_guess="Item_No",
-                invoice_in=inv_in, item_in=item_in
-            )
-            if upd_filtered.empty:
-                st.info("No matching rows in **Updated Credit Calculation** for this invoice + item.")
-            else:
-                upd_slice = slice_cols_range(upd_filtered, "Subbed_QTY", "Credit_AM")
-                st.subheader("📊 Updated Credit Calculation (Columns D–O)")
-                st.dataframe(upd_slice, use_container_width=True)
-                download_link(upd_slice, "updated_calc_D_to_O.csv", "⬇️ Download Updated Calc Slice")
+            show_cols = [
+                req_inv_col, req_item_col,
+                req_amt_col, calc_amt_col, "diff"
+            ]
+            nice = exact.rename(columns={
+                req_amt_col: "Request_Amount",
+                calc_amt_col: "Calculated_Amount"
+            })[show_cols].sort_values([req_inv_col, req_item_col])
+            st.dataframe(nice, use_container_width=True)
+            download_csv(nice, "matched_equal.csv", "⬇️ Download matched (equal)")
+
+        st.subheader("⚠️ Discrepancies (Amounts differ beyond tolerance)")
+        bad = matched[~matched["match_status"]].copy()
+        if bad.empty:
+            st.info("No discrepancies found.")
+        else:
+            show_cols = [
+                req_inv_col, req_item_col,
+                req_amt_col, calc_amt_col, "diff"
+            ]
+            issues = bad.rename(columns={
+                req_amt_col: "Request_Amount",
+                calc_amt_col: "Calculated_Amount"
+            })[show_cols].sort_values([req_inv_col, req_item_col])
+            st.dataframe(issues, use_container_width=True)
+            download_csv(issues, "discrepancies.csv", "⬇️ Download discrepancies")
+
+    # --- UNMATCHED on either side ---
+    req_keys  = req[["_inv","_item"]].drop_duplicates()
+    calc_keys = calc[["_inv","_item"]].drop_duplicates()
+
+    only_req_keys  = pd.merge(req_keys,  calc_keys, on=["_inv","_item"], how="left", indicator=True)
+    only_req_keys  = only_req_keys[only_req_keys["_merge"]=="left_only"].drop(columns=["_merge"])
+
+    only_calc_keys = pd.merge(calc_keys, req_keys,   on=["_inv","_item"], how="left", indicator=True)
+    only_calc_keys = only_calc_keys[only_calc_keys["_merge"]=="left_only"].drop(columns=["_merge"])
+
+    st.subheader("🧩 Unmatched in Requestor (no calculator row)")
+    if only_req_keys.empty:
+        st.info("None 🎉")
     else:
-        st.warning("Upload the **Updated Credit Calculation** file.")
+        unmatched_req = pd.merge(only_req_keys, req, on=["_inv","_item"], how="left")
+        show = unmatched_req[[req_inv_col, req_item_col, req_amt_col]].drop_duplicates()
+        st.dataframe(show.sort_values([req_inv_col, req_item_col]), use_container_width=True)
+        download_csv(show, "unmatched_in_requestor.csv", "⬇️ Download unmatched (requestor)")
+
+    st.subheader("🧩 Unmatched in Calculator (no requestor row)")
+    if only_calc_keys.empty:
+        st.info("None 🎉")
+    else:
+        unmatched_calc = pd.merge(only_calc_keys, calc, on=["_inv","_item"], how="left")
+        show = unmatched_calc[[calc_inv_col, calc_item_col, calc_amt_col]].drop_duplicates()
+        st.dataframe(show.sort_values([calc_inv_col, calc_item_col]), use_container_width=True)
+        download_csv(show, "unmatched_in_calculator.csv", "⬇️ Download unmatched (calculator)")
