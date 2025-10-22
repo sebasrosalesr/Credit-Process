@@ -5,7 +5,13 @@ import pandas as pd
 import firebase_admin
 from firebase_admin import credentials, db
 import io, re, sys, subprocess
-import pdfplumber
+
+# --- install pdfplumber dynamically ---
+try:
+    import pdfplumber
+except ModuleNotFoundError:
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "pdfplumber"], check=True)
+    import pdfplumber
 
 # ==============================
 # Streamlit setup
@@ -14,7 +20,7 @@ st.set_page_config(page_title="Credit Request Search Tool", layout="wide")
 st.title("🔍 Credit Request Search Tool")
 st.markdown("""
 Search by **Ticket Number**, **Invoice Number**, **Item Number**, or **Invoice + Item Pair**.  
-Upload the **Case Files PDF** to display Background notes for each matching **Ticket Number**.
+Upload the **Case Files PDF** to display Background notes that match each Firebase record's **Ticket (Case)** + **Invoice** + **Item**.
 """)
 
 # ==============================
@@ -37,25 +43,61 @@ ref = db.reference('credit_requests')
 pdf_file = st.file_uploader("📄 Upload the Case Files PDF (Background pages)", type=["pdf"])
 
 # ==============================
-# Regex helpers
+# Regex & normalizers
 # ==============================
-CASE_RE = re.compile(r"(?mi)[\u2022\-\*]?\s*Case\s*Number:\s*([A-Za-z0-9\-_]+)")
-BACKGROUND_HEADER_RE = re.compile(r"(?mi)^[ \t]*Background[ \t]*:?[ \t]*$", re.MULTILINE)
+CASE_RE         = re.compile(r"(?mi)[\u2022\-\*]?\s*Case\s*Number:\s*([A-Za-z0-9\-_]+)")
+BACKGROUND_HDR  = re.compile(r"(?mi)^[ \t]*Background[ \t]*:?[ \t]*$", re.MULTILINE)
+INVOICE_RE      = re.compile(r"(?mi)[\u2022\-\*]?\s*Invoice\s*Number:\s*([A-Za-z0-9\-\_]+)")
+ITEM_RE         = re.compile(r"(?mi)[\u2022\-\*]?\s*Item\s*Number:\s*([A-Za-z0-9\-\_/]+)")
 
 def norm_case(s: str | None) -> str:
-    if not s:
-        return ""
-    s = s.strip().upper().replace("–", "-").replace("—", "-")
+    if not s: return ""
+    s = s.strip().upper().replace("–","-").replace("—","-")
     return re.sub(r"\s+", "", s)
 
+def norm_invoice(s: str | None) -> str:
+    """Lower, strip spaces/dashes, keep alnum only; keep leading 'inv' if present to be consistent."""
+    if not s: return ""
+    s = s.strip().lower()
+    s = s.replace("–","-").replace("—","-")
+    s = re.sub(r"[^a-z0-9]", "", s)  # keep letters+digits
+    return s
+
+def norm_item(s: str | None) -> str:
+    """Upper, remove spaces; keep dashes/letters/digits by removing spaces then lowering case sensitivity."""
+    if not s: return ""
+    s = s.strip().upper().replace("–","-").replace("—","-")
+    s = re.sub(r"\s+", "", s)
+    return s
+
 def first_case_number(text: str) -> str | None:
-    if not text:
-        return None
-    m = CASE_RE.search(text)
+    m = CASE_RE.search(text or "")
     return norm_case(m.group(1)) if m else None
 
 def is_background_page(text: str) -> bool:
-    return bool(BACKGROUND_HEADER_RE.search(text) and CASE_RE.search(text))
+    t = text or ""
+    return bool(BACKGROUND_HDR.search(t) and CASE_RE.search(t))
+
+def parse_form_fields(text: str) -> dict:
+    """
+    Extract Case/Invoice/Item from a Background page.
+    Returns dict with raw & normalized versions.
+    """
+    t = text or ""
+    case_m    = CASE_RE.search(t)
+    inv_m     = INVOICE_RE.search(t)
+    item_m    = ITEM_RE.search(t)
+    raw_case  = case_m.group(1) if case_m else ""
+    raw_inv   = inv_m.group(1) if inv_m else ""
+    raw_item  = item_m.group(1) if item_m else ""
+    return {
+        "case_raw": raw_case,
+        "invoice_raw": raw_inv,
+        "item_raw": raw_item,
+        "case": norm_case(raw_case),
+        "invoice": norm_invoice(raw_inv),
+        "item": norm_item(raw_item),
+    }
 
 @st.cache_data(show_spinner=False)
 def load_pdf_pages_text(pdf_bytes: bytes) -> list[str]:
@@ -65,29 +107,53 @@ def load_pdf_pages_text(pdf_bytes: bytes) -> list[str]:
             pages.append(p.extract_text() or "")
     return pages
 
-def extract_case_notes_from_pages(pages_text: list[str], target_ticket: str):
-    """Collect all pages for a case until the next Background with a different case number."""
+def collect_pages_for_case(pages_text: list[str], target_ticket: str) -> list[tuple[int, str]]:
+    """
+    Collect all pages for the given ticket (== case), stopping at the next Background with different case.
+    """
     target_norm = norm_case(target_ticket)
-    collected = []
-    started = False
+    out, started = [], False
     for i, txt in enumerate(pages_text, start=1):
         if not started:
             if is_background_page(txt):
-                page_case = first_case_number(txt)
-                if page_case == target_norm:
+                fields = parse_form_fields(txt)
+                if fields["case"] == target_norm:
                     started = True
-                    collected.append((i, txt))
+                    out.append((i, txt))
         else:
             if is_background_page(txt):
-                page_case = first_case_number(txt)
-                if page_case and page_case != target_norm:
+                fields = parse_form_fields(txt)
+                if fields["case"] and fields["case"] != target_norm:
                     break
-                collected.append((i, txt))
+                out.append((i, txt))
             else:
-                collected.append((i, txt))
-    if not collected:
-        return collected, f"⚠️ Ticket '{target_ticket}' not found in PDF."
-    return collected, ""
+                out.append((i, txt))
+    return out
+
+def match_notes_to_record(pages_for_case: list[tuple[int, str]], record_invoice: str, record_item: str):
+    """
+    From the collected pages for the case, return only the subset whose form block (on a Background page)
+    has Invoice+Item matching the Firebase record (normalized). Continuation pages after a matching
+    Background page are included until the next Background page (which will be handled by the caller).
+    """
+    inv_norm = norm_invoice(record_invoice)
+    item_norm = norm_item(record_item)
+
+    matched_pages = []
+    include = False  # are we currently in a matching block?
+    for i, txt in pages_for_case:
+        if is_background_page(txt):
+            fields = parse_form_fields(txt)
+            # start a new block; decide include based on form fields
+            include = (fields["invoice"] == inv_norm) and (fields["item"] == item_norm)
+            if include:
+                matched_pages.append((i, txt))
+        else:
+            # continuation page: include only if the previous Background matched
+            if include:
+                matched_pages.append((i, txt))
+
+    return matched_pages
 
 # ==============================
 # Search UI
@@ -130,8 +196,12 @@ if st.button("🔎 Search"):
                 elif search_type == "Invoice + Item Pair":
                     if uploaded_file:
                         df = pd.read_csv(uploaded_file)
+                        if not {'Invoice Number', 'Item Number'}.issubset(df.columns):
+                            st.error("CSV must contain 'Invoice Number' and 'Item Number'.")
+                            break
                         for _, row in df.iterrows():
-                            if inv == str(row['Invoice Number']).strip() and item == str(row['Item Number']).strip():
+                            if (inv == str(row['Invoice Number']).strip()
+                                and item == str(row['Item Number']).strip()):
                                 match = True
                                 break
                     elif input_invoice and input_item:
@@ -143,12 +213,8 @@ if st.button("🔎 Search"):
                     r["Record ID"] = key
                     matches.append(r)
 
-        # =====================
-        # Results + Notes
-        # =====================
         if matches:
             st.success(f"✅ {len(matches)} record(s) found.")
-
             pages_text = load_pdf_pages_text(pdf_file.read()) if pdf_file else None
 
             for rec_index, record in enumerate(matches, start=1):
@@ -158,20 +224,40 @@ if st.button("🔎 Search"):
                     st.json(record)
 
                     ticket_val = str(record.get("Ticket Number", "")).strip()
+                    inv_val    = str(record.get("Invoice Number", "")).strip()
+                    item_val   = str(record.get("Item Number", "")).strip()
+
                     if ticket_val and pages_text is not None:
-                        st.subheader(f"Background Notes — Ticket {ticket_val}")
-                        collected, msg = extract_case_notes_from_pages(pages_text, ticket_val)
-                        if msg:
-                            st.warning(msg)
+                        # collect the pages for the ticket/case
+                        pages_for_case = collect_pages_for_case(pages_text, ticket_val)
+
+                        if not pages_for_case:
+                            st.warning(f"⚠️ Ticket '{ticket_val}' not found in PDF.")
                         else:
-                            for idx, (pg, txt) in enumerate(collected, start=1):
-                                st.markdown(f"**Page {pg}**")
-                                # ✅ Unique key includes record index
-                                st.text_area(
-                                    label=f"Page {pg} text",
-                                    value=txt,
-                                    height=300,
-                                    key=f"ticket_{norm_case(ticket_val)}_rec_{rec_index}_pg_{pg}"
+                            # Narrow to invoice+item match
+                            matched = match_notes_to_record(pages_for_case, inv_val, item_val)
+
+                            if matched:
+                                st.subheader(f"Background Notes — {ticket_val} | Invoice {inv_val} | Item {item_val}")
+                                for idx, (pg, txt) in enumerate(matched, start=1):
+                                    st.markdown(f"**Page {pg}**")
+                                    st.text_area(
+                                        label=f"Page {pg} text",
+                                        value=txt,
+                                        height=300,
+                                        key=f"ticket_{norm_case(ticket_val)}_rec_{rec_index}_pg_{pg}"
+                                    )
+                            else:
+                                # show quick peek of what PDF has for the first page (to help debug mismatch)
+                                # parse first Background page fields for transparency
+                                first_bg_idx = next((i for (i, t) in pages_for_case if is_background_page(t)), None)
+                                fields = parse_form_fields(next((t for (_, t) in pages_for_case if is_background_page(t)), ""))
+
+                                st.info(
+                                    "ℹ️ No Background pages matched both Invoice and Item for this record.\n\n"
+                                    f"**Record:** Invoice `{inv_val}`, Item `{item_val}`  \n"
+                                    f"**PDF (first Background for case {ticket_val}):** "
+                                    f"Invoice `{fields.get('invoice_raw','')}`, Item `{fields.get('item_raw','')}`"
                                 )
                     else:
                         if not ticket_val:
@@ -179,7 +265,7 @@ if st.button("🔎 Search"):
                         elif pages_text is None:
                             st.info("ℹ️ Upload the Case Files PDF above to display Background notes.")
 
-            # Download CSV
+            # Download CSV of results
             df_export = pd.DataFrame(matches)
             buf = io.StringIO()
             df_export.to_csv(buf, index=False)
