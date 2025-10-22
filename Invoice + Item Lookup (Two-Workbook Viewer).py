@@ -80,8 +80,34 @@ def download_csv(df: pd.DataFrame, filename: str, label: str):
     df.to_csv(buf, index=False)
     st.download_button(label, data=buf.getvalue(), file_name=filename, mime="text/csv")
 
-def money(x: float) -> str:
-    return f"${x:,.2f}"
+def money(x) -> str:
+    """
+    Safe currency formatter:
+    - accepts float/int/decimal/strings like '$1,234.56' or '1,234.56'
+    - handles NaN/None
+    - falls back to plain str(x) if it truly can't be parsed
+    """
+    try:
+        # pandas NA-safe check
+        if pd.isna(x):
+            return "$0.00"
+    except Exception:
+        pass
+
+    # already numeric?
+    if isinstance(x, (int, float)):
+        return f"${float(x):,.2f}"
+
+    # try parsing string-y values
+    try:
+        s = str(x).strip().replace("$", "").replace(",", "").replace("−", "-")
+        if s.startswith("(") and s.endswith(")"):
+            s = f"-{s[1:-1]}"
+        val = float(s)
+        return f"${val:,.2f}"
+    except Exception:
+        # last resort: just return the original value as string
+        return str(x)
 
 # ---------------- inputs ----------------
 c1, c2 = st.columns(2)
