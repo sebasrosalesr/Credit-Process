@@ -31,14 +31,14 @@ def norm_name(s: str) -> str:
 def fuzzy_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
     """
     Find a column by normalized name. Works for variants like:
-    'Credit_AM', 'Credit AMT', 'Credit Amount', 'credit_amt', etc.
+    'Credit_AM', 'Credit AMT', 'Credit Amount', etc.
     """
     want_set = {norm_name(c) for c in candidates}
-    # exact normalized match
+    # exact normalized match first
     for c in df.columns:
-        if norm_name(c) in want_set:
+        if norm_name(c) in want_set:  # type: ignore[arg-type]
             return c
-    # contains match (fallback)
+    # contains match fallback
     for c in df.columns:
         n = norm_name(c)
         if any(w in n for w in want_set):
@@ -75,12 +75,12 @@ def money(x: float) -> str:
 # ---------------- inputs ----------------
 c1, c2 = st.columns(2)
 with c1:
-    req_file = st.file_uploader("📥 Requestor file (e.g., Pricing Credits.xlsx / Template)", type=["xlsx","xls","csv"])
+    req_file = st.file_uploader("📥 Requestor file (Pricing Credits.xlsx / Template)", type=["xlsx","xls","csv"])
 with c2:
     calc_file = st.file_uploader("📥 Updated Credits Calculator file", type=["xlsx","xls","csv"])
 
 with st.expander("⚙️ Column mapping (auto-detected; edit if needed)"):
-    st.caption("We try to detect common header variants. Adjust here if yours differ.")
+    st.caption("We try to detect common header variants. Adjust if needed.")
     # Requestor guesses
     req_inv_label  = st.text_input("Requestor: Invoice column", value="Invoice Number")
     req_item_label = st.text_input("Requestor: Item column", value="Item Number")
@@ -88,7 +88,6 @@ with st.expander("⚙️ Column mapping (auto-detected; edit if needed)"):
     # Calculator guesses
     calc_inv_label  = st.text_input("Calculator: Invoice column", value="Invoice_No")
     calc_item_label = st.text_input("Calculator: Item column", value="Item_No")
-    # NOTE: handle many variants of "Credit amount"
     calc_amt_label  = st.text_input("Calculator: Credit amount column", value="Credit_AM")
 
 st.markdown("")
@@ -105,7 +104,7 @@ if st.button("🔎 Compare"):
     if req_df is None or calc_df is None:
         st.stop()
 
-    # Detect columns with lots of aliases
+    # Detect columns (many aliases supported)
     req_inv_col  = fuzzy_col(req_df,  [req_inv_label, "Invoice Number", "Invoice_Number", "InvoiceNo", "Invoice"])
     req_item_col = fuzzy_col(req_df,  [req_item_label, "Item Number", "Item_Number", "ItemNo", "Item_No", "Item"])
     req_amt_col  = fuzzy_col(req_df,  [req_amt_label, "Credit Request Total", "Credit_Total", "Credit Amount", "Amount", "Total"])
@@ -140,8 +139,6 @@ if st.button("🔎 Compare"):
     calc["_amt_calc"] = calc[calc_amt_col].map(to_number)
 
     # Totals for KPI
-    req_total_rows  = int(len(req))
-    calc_total_rows = int(len(calc))
     req_total_amt   = float(req["_amt_req"].sum())
     calc_total_amt  = float(calc["_amt_calc"].sum())
 
@@ -152,11 +149,8 @@ if st.button("🔎 Compare"):
         how="inner",
         suffixes=("_req","_calc")
     )
-    matched_count = int(len(matched))
-
-    # exact equality (no tolerance)
     matched["diff"] = matched["_amt_req"] - matched["_amt_calc"]
-    matched["match_status"] = matched["diff"] == 0
+    matched["match_status"] = matched["diff"] == 0  # exact only (no tolerance)
 
     exact = matched[matched["match_status"]].copy()
     bad   = matched[~matched["match_status"]].copy()
@@ -172,13 +166,13 @@ if st.button("🔎 Compare"):
 
     unmatched_req_count  = int(len(only_req))
     unmatched_calc_count = int(len(only_calc))
+    matched_count        = int(len(matched))
+    discrep_count        = int(len(bad))
+    matched_amt_sum      = float(exact["_amt_req"].sum())
+    discrep_amt_abs      = float(bad["diff"].abs().sum())
+    net_diff_matched     = float(matched["_amt_req"].sum() - matched["_amt_calc"].sum())
 
-    # KPI metrics
-    matched_amt_sum = float(exact["_amt_req"].sum())
-    discrep_count   = int(len(bad))
-    discrep_amt_abs = float(bad["diff"].abs().sum())
-    net_diff_matched = float(matched["_amt_req"].sum() - matched["_amt_calc"].sum())
-
+    # ---------- KPI row ----------
     a,b,c,d,e,f = st.columns(6)
     a.metric("✅ Matched pairs", matched_count)
     b.metric("⚠️ Discrepancies", discrep_count)
@@ -186,48 +180,64 @@ if st.button("🔎 Compare"):
     d.metric("🧩 Unmatched in Calculator", unmatched_calc_count)
     e.metric("Σ Request $",  money(req_total_amt))
     f.metric("Σ Calculator $", money(calc_total_amt))
-    st.caption(f"Matched $ (exact equal): **{money(matched_amt_sum)}** · "
-               f"Total absolute discrepancy on matched: **{money(discrep_amt_abs)}** · "
-               f"Net diff on matched (Req - Calc): **{money(net_diff_matched)}**")
-
+    st.caption(f"Matched $ (exact): **{money(matched_amt_sum)}** · "
+               f"Total |diff| on matched: **{money(discrep_amt_abs)}** · "
+               f"Net diff on matched (Req − Calc): **{money(net_diff_matched)}**")
     st.markdown("---")
 
-    # Tables
+    # ---------- resolve post-merge column names (with suffixes) ----------
+    req_amt_m   = f"{req_amt_col}_req"   if f"{req_amt_col}_req"   in matched.columns else req_amt_col
+    calc_amt_m  = f"{calc_amt_col}_calc" if f"{calc_amt_col}_calc" in matched.columns else calc_amt_col
+
+    inv_req_m   = f"{req_inv_col}_req"
+    inv_calc_m  = f"{calc_inv_col}_calc"
+    item_req_m  = f"{req_item_col}_req"
+    item_calc_m = f"{calc_item_col}_calc"
+
+    inv_show  = inv_req_m  if inv_req_m  in matched.columns else (inv_calc_m  if inv_calc_m  in matched.columns else req_inv_col)
+    item_show = item_req_m if item_req_m in matched.columns else (item_calc_m if item_calc_m in matched.columns else req_item_col)
+
+    def prettify(df):
+        cols_map = {
+            inv_show:  "Invoice",
+            item_show: "Item",
+            req_amt_m: "Request_Amount",
+            calc_amt_m:"Calculated_Amount",
+        }
+        keep = [c for c in [inv_show, item_show, req_amt_m, calc_amt_m, "diff"] if c in df.columns]
+        out = df[keep].rename(columns=cols_map)
+        sort_cols = [c for c in ["Invoice", "Item"] if c in out.columns]
+        if sort_cols:
+            out = out.sort_values(sort_cols, kind="stable")
+        return out
+
+    # ---------- Exact Matches table ----------
     st.subheader("✅ Exact Matches")
     if exact.empty:
         st.info("No exact amount matches.")
     else:
-        show_cols = [
-            req_inv_col, req_item_col, req_amt_col, calc_amt_col, "diff"
-        ]
-        nice = exact.rename(columns={
-            req_amt_col: "Request_Amount",
-            calc_amt_col: "Calculated_Amount"
-        })[show_cols].sort_values([req_inv_col, req_item_col])
+        nice = prettify(exact)
         st.dataframe(nice, use_container_width=True)
         download_csv(nice, "matched_exact.csv", "⬇️ Download matched (exact)")
 
+    # ---------- Discrepancies table ----------
     st.subheader("⚠️ Discrepancies (Amounts differ)")
     if bad.empty:
         st.info("No discrepancies found.")
     else:
-        show_cols = [
-            req_inv_col, req_item_col, req_amt_col, calc_amt_col, "diff"
-        ]
-        issues = bad.rename(columns={
-            req_amt_col: "Request_Amount",
-            calc_amt_col: "Calculated_Amount"
-        })[show_cols].sort_values([req_inv_col, req_item_col])
+        issues = prettify(bad)
         st.dataframe(issues, use_container_width=True)
         download_csv(issues, "discrepancies.csv", "⬇️ Download discrepancies")
 
+    # ---------- Unmatched ----------
     st.subheader("🧩 Unmatched in Requestor (no calculator row)")
     if only_req.empty:
         st.info("None 🎉")
     else:
         unmatched_req = pd.merge(only_req, req, on=["_inv","_item"], how="left")
         show = unmatched_req[[req_inv_col, req_item_col, req_amt_col]].drop_duplicates()
-        st.dataframe(show.sort_values([req_inv_col, req_item_col]), use_container_width=True)
+        show = show.rename(columns={req_inv_col: "Invoice", req_item_col: "Item", req_amt_col: "Request_Amount"})
+        st.dataframe(show.sort_values(["Invoice", "Item"]), use_container_width=True)
         download_csv(show, "unmatched_in_requestor.csv", "⬇️ Download unmatched (requestor)")
 
     st.subheader("🧩 Unmatched in Calculator (no requestor row)")
@@ -236,5 +246,6 @@ if st.button("🔎 Compare"):
     else:
         unmatched_calc = pd.merge(only_calc, calc, on=["_inv","_item"], how="left")
         show = unmatched_calc[[calc_inv_col, calc_item_col, calc_amt_col]].drop_duplicates()
-        st.dataframe(show.sort_values([calc_inv_col, calc_item_col]), use_container_width=True)
+        show = show.rename(columns={calc_inv_col: "Invoice", calc_item_col: "Item", calc_amt_col: "Calculated_Amount"})
+        st.dataframe(show.sort_values(["Invoice", "Item"]), use_container_width=True)
         download_csv(show, "unmatched_in_calculator.csv", "⬇️ Download unmatched (calculator)")
