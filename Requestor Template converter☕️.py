@@ -1,22 +1,19 @@
 import streamlit as st
 import pandas as pd
 import io
+import re
 
 # --- Standard Output Schema ---
 standard_columns = [
     'Date', 'Credit Type', 'Issue Type', 'Customer Number', 'Invoice Number',
     'Item Number', 'QTY', 'Unit Price', 'Extended Price', 'Corrected Unit Price',
     'Extended Correct Price',
-    # Split credits for macro files
     'Item Non-Taxable Credit', 'Item Taxable Credit',
-    # Total (for Macro files, pulled from "Total Credit Amt")
     'Credit Request Total',
     'Requested By', 'Reason for Credit', 'Status', 'Ticket Number'
 ]
 
 # --- Macro File Mapping ---
-# Note: we DO map the two item credit columns; "Credit Request Total" will be
-# populated directly from "Total Credit Amt" after conversion.
 macro_mapping = {
     'Date': 'Req Date',
     'Credit Type': 'CRType',
@@ -29,7 +26,6 @@ macro_mapping = {
     'Requested By': 'Requested By',
     'Reason for Credit': 'Reason',
     'Status': 'Status'
-    # Other fields default to None
 }
 
 # --- DOC Analysis Mapping (with alternate names) ---
@@ -41,7 +37,7 @@ doc_analysis_mapping = {
     'Invoice Number': ['SOPNUMBE', 'SOP Number'],
     'Item Number': ['ITEMNMBR', 'Item Number'],
     'QTY': ['QUANTITY', 'Qty on Invoice'],
-    'Unit Price': ['UNITPRCE'],
+    'Unit Price': ['UNITPRCE', 'UOM Price'],
     'Extended Price': ['XTNDPRCE', 'Extended Price'],
     'Corrected Unit Price': None,
     'Extended Correct Price': None,
@@ -53,6 +49,48 @@ doc_analysis_mapping = {
     'Status': None,
     'Ticket Number': None
 }
+
+# --- NEW: JF Request Mapping ---
+jf_mapping = {
+    'Date': 'Doc Date',
+    'Credit Type': None,
+    'Issue Type': None,
+    'Customer Number': 'Cust Number',
+    'Invoice Number': 'SOP Number',
+    'Item Number': 'Item Number',
+    'QTY': 'Qty on Invoice',
+    'Unit Price': 'UOM Price',
+    'Extended Price': 'Extended Price',
+    'Corrected Unit Price': 'New UOM Price',
+    'Extended Correct Price': 'New Extended Price',
+    'Item Non-Taxable Credit': None,
+    'Item Taxable Credit': None,
+    'Credit Request Total': 'Difference to Be Credited',
+    'Requested By': None,
+    'Reason for Credit': None,
+    'Status': None,
+    'Ticket Number': None
+}
+
+# -------- Helpers --------
+def _money_to_float(s):
+    """coerce money-like strings to float (handles $, commas, parentheses)"""
+    if pd.isna(s): return None
+    s = str(s).strip()
+    if s == "": return None
+    neg = s.startswith("(") and s.endswith(")")
+    s = s.replace("$","").replace(",","").replace("−","-")
+    if neg: s = "-" + s[1:-1]
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+def convert_money_columns(df, cols):
+    for c in cols:
+        if c in df.columns:
+            df[c] = df[c].apply(_money_to_float)
+    return df
 
 # --- Detect header row in DOC Analysis ---
 def load_doc_analysis_file(file):
@@ -72,7 +110,7 @@ def load_doc_analysis_file(file):
 
 # --- Filter DOC rows where price is zero ---
 def filter_doc_analysis(df):
-    for col in ['UNITPRCE', 'Unit Price']:
+    for col in ['UNITPRCE', 'Unit Price', 'UOM Price']:
         if col in df.columns:
             return df[df[col] != 0]
     return df
@@ -85,14 +123,13 @@ def convert_file(df, mapping):
     for std_col in standard_columns:
         source = mapping.get(std_col)
         if isinstance(source, list):
-            # try alternates
+            found = None
             for alt in source:
                 match = cols_upper.get(alt.strip().upper())
                 if match:
-                    df_out[std_col] = df[match]
+                    found = match
                     break
-            else:
-                df_out[std_col] = None
+            df_out[std_col] = df[found] if found else None
         elif isinstance(source, str):
             match = cols_upper.get(source.strip().upper())
             df_out[std_col] = df[match] if match else None
@@ -120,40 +157,62 @@ if uploaded_files:
             df_sample = pd.read_excel(uploaded_file, nrows=5)
             sample_cols = set(df_sample.columns.str.strip())
 
-            # Macro format detection
-            if 'Req Date' in sample_cols and 'Cust ID' in sample_cols and 'Total Credit Amt' in sample_cols:
-                st.info(f"📘 Format Detected: Macro File - {uploaded_file.name}")
+            # 1) Macro format detection
+            if {'Req Date', 'Cust ID', 'Total Credit Amt'}.issubset(sample_cols):
+                st.info(f"📘 Format Detected: Macro File — {uploaded_file.name}")
                 df_full = pd.read_excel(uploaded_file)
-
-                # Convert columns via macro mapping
                 converted = convert_file(df_full, macro_mapping)
 
-                # Populate Credit Request Total from Total Credit Amt (as requested)
-                if 'Total Credit Amt' in df_full.columns:
-                    converted['Credit Request Total'] = df_full['Total Credit Amt']
-                else:
-                    converted['Credit Request Total'] = None
-
+                # Pull total directly
+                converted['Credit Request Total'] = df_full.get('Total Credit Amt')
                 converted['Source File'] = uploaded_file.name
                 converted['Format'] = 'Macro File'
                 converted_frames.append(converted)
+                continue
 
-            else:
-                st.info(f"🔍 Trying to detect DOC Analysis format - {uploaded_file.name}")
-                df_doc = load_doc_analysis_file(uploaded_file)
-                df_doc = filter_doc_analysis(df_doc)
-                converted = convert_file(df_doc, doc_analysis_mapping)
+            # 2) JF Request detection (Doc Date + Difference to Be Credited present)
+            jf_hits = {'Doc Date', 'SOP Number', 'Cust Number'}
+            if jf_hits.issubset(sample_cols) or 'Difference to Be Credited' in sample_cols:
+                st.info(f"🟣 Format Detected: JF Request — {uploaded_file.name}")
+                df_full = pd.read_excel(uploaded_file)
+                # make sure money-like columns are numeric
+                df_full = convert_money_columns(
+                    df_full,
+                    ['UOM Price','Extended Price','New UOM Price','New Extended Price','Difference to Be Credited']
+                )
+                converted = convert_file(df_full, jf_mapping)
                 converted['Source File'] = uploaded_file.name
-                converted['Format'] = 'DOC Analysis'
+                converted['Format'] = 'JF Request'
                 converted_frames.append(converted)
+                continue
+
+            # 3) Fallback to DOC Analysis (with header sniff)
+            st.info(f"🔍 Trying to detect DOC Analysis format — {uploaded_file.name}")
+            df_doc = load_doc_analysis_file(uploaded_file)
+            df_doc = filter_doc_analysis(df_doc)
+            converted = convert_file(df_doc, doc_analysis_mapping)
+            converted['Source File'] = uploaded_file.name
+            converted['Format'] = 'DOC Analysis'
+            converted_frames.append(converted)
 
         except Exception as e:
             st.warning(f"⚠️ Skipped file `{uploaded_file.name}`: {e}")
 
     if converted_frames:
         final_df = pd.concat(converted_frames, ignore_index=True)
+
+        # optional: ensure numeric in standard numeric columns for consistency
+        numeric_like = [
+            'QTY','Unit Price','Extended Price','Corrected Unit Price',
+            'Extended Correct Price','Item Non-Taxable Credit','Item Taxable Credit',
+            'Credit Request Total'
+        ]
+        for c in numeric_like:
+            if c in final_df.columns:
+                final_df[c] = pd.to_numeric(final_df[c], errors='coerce')
+
         st.success(f"✅ Combined Rows: {final_df.shape[0]}")
-        st.dataframe(final_df)
+        st.dataframe(final_df, use_container_width=True)
 
         excel_bytes = convert_df_to_excel(final_df)
         st.download_button(
