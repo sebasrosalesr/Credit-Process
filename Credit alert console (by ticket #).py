@@ -156,7 +156,7 @@ def summarize_row(row: pd.Series):
 # Search UI (single ticket)
 # =========================
 with st.form("search"):
-    tnum = st.text_input("Ticket Number (e.g., R-046037)", value="")
+    tnum = st.text_input("Ticket Number", value="")
     submitted = st.form_submit_button("Search", type="primary")
 
 if submitted:
