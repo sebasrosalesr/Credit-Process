@@ -157,15 +157,12 @@ def summarize_row(row: pd.Series):
 # =========================
 with st.form("search"):
     tnum = st.text_input("Ticket Number (e.g., R-046037)", value="")
-    rid  = st.text_input("Record ID (optional)", value="")
     submitted = st.form_submit_button("Search", type="primary")
 
 if submitted:
     # find ticket
     if tnum:
         sub = df[df["Ticket Number"].astype(str) == tnum]
-    elif rid:
-        sub = df[df["Record ID"].astype(str) == rid]
     else:
         sub = pd.DataFrame()
 
