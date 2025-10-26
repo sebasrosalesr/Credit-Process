@@ -19,30 +19,21 @@ st.title("🎫 Credit Ticket Console")
 st.caption("Search any ticket, see last update, staleness, CR number, and full history.")
 
 # =========================
-# Firebase init (from secrets)
+# Firebase init (simplified + reliable)
 # =========================
-@st.cache_resource(show_spinner=False)
-def init_firebase():
-    """
-    Expects in .streamlit/secrets.toml:
-    [firebase]
-    type="service_account"
-    project_id="..."
-    private_key="-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n"
-    client_email="..."
-    firebase_db_url="https://<your-db>.firebasedatabase.app/"
-    """
-    cfg = dict(st.secrets["firebase"])
-    db_url = cfg.pop("firebase_db_url")
-    # normalize private key newlines
-    if "private_key" in cfg and "\\n" in cfg["private_key"]:
-        cfg["private_key"] = cfg["private_key"].replace("\\n", "\n")
-    cred = credentials.Certificate(cfg)
-    if not firebase_admin._apps:
-        firebase_admin.initialize_app(cred, {"databaseURL": db_url})
-    return True
+import firebase_admin
+from firebase_admin import credentials, db
 
-init_firebase()
+if not firebase_admin._apps:
+    firebase_config = dict(st.secrets["firebase"])
+    firebase_config["private_key"] = firebase_config["private_key"].replace("\\n", "\n")
+    cred = credentials.Certificate(firebase_config)
+
+    firebase_admin.initialize_app(cred, {
+        'databaseURL': 'https://creditapp-tm-default-rtdb.firebaseio.com/'
+    })
+
+ref = db.reference('credit_requests')
 
 # =========================
 # Data load
