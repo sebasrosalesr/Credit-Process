@@ -282,3 +282,21 @@ st.caption(
     "Use the buttons to mark done, snooze, or delete. "
     "Timestamps shown in UTC."
 )
+with st.expander("⬇️ Export reminders"):
+    all_open = fetch_open()
+    all_done = fetch_done(limit=10_000)   # export more, if you like
+    exp_tabs = st.tabs(["Open", "Completed"])
+    with exp_tabs[0]:
+        st.download_button(
+            "Download open reminders (CSV)",
+            data=all_open.to_csv(index=False).encode("utf-8"),
+            file_name="open_reminders.csv",
+            mime="text/csv",
+        )
+    with exp_tabs[1]:
+        st.download_button(
+            "Download completed reminders (CSV)",
+            data=all_done.to_csv(index=False).encode("utf-8"),
+            file_name="completed_reminders.csv",
+            mime="text/csv",
+        )
