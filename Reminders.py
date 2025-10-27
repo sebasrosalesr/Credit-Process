@@ -130,7 +130,7 @@ if open_df.empty:
     st.info("No open reminders. 🎉")
 else:
     # Render each reminder with actions
-    now = pd.Timestamp.utcnow().tz_localize("UTC")
+    now = pd.Timestamp.now(tz="UTC")
     for _, row in open_df.iterrows():
         rid   = int(row["id"])
         ticket = row["ticket"]
