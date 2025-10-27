@@ -8,6 +8,16 @@ import streamlit as st
 DB_PATH = "reminders.db"
 
 # -------------------------
+# Small compatibility helper
+# -------------------------
+def safe_rerun():
+    """Rerun for any Streamlit version."""
+    if hasattr(st, "rerun"):
+        st.rerun()
+    else:
+        st.experimental_rerun()
+
+# -------------------------
 # DB helpers (simple, safe)
 # -------------------------
 def init_db():
@@ -82,6 +92,10 @@ st.title("⏰ Personal Follow-up Reminders")
 
 init_db()
 
+# show any queued flash after a rerun
+if msg := st.session_state.pop("_flash_msg", None):
+    st.success(msg)
+
 with st.form("new"):
     st.subheader("Add a reminder")
     ticket = st.text_input("Ticket / Reference (free text)", placeholder="R-052066, INV13652804, 'Call Scott re: CR', …")
@@ -104,8 +118,9 @@ with st.form("new"):
             st.error("Hours must be > 0.")
         else:
             add_reminder(ticket, note, hours)
-            st.success(f"Reminder added for {ticket.strip()} in {hours} hour(s).")
-            st.experimental_rerun()
+            # Persist success across rerun
+            st.session_state._flash_msg = f"Reminder added for {ticket.strip()} in {hours} hour(s)."
+            safe_rerun()
 
 st.divider()
 st.subheader("Open reminders")
@@ -157,16 +172,16 @@ else:
                 # Handle actions
                 if btn_done:
                     mark_done(rid)
-                    st.experimental_rerun()
+                    safe_rerun()
                 if b24:
                     snooze(rid, 24)
-                    st.experimental_rerun()
+                    safe_rerun()
                 if b48:
                     snooze(rid, 48)
-                    st.experimental_rerun()
+                    safe_rerun()
                 if bcs:
                     snooze(rid, int(cs_val))
-                    st.experimental_rerun()
+                    safe_rerun()
 
 st.divider()
 st.subheader("Recently completed")
