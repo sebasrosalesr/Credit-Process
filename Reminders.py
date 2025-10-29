@@ -1,17 +1,92 @@
-# reminders.py
+# reminders_app.py
+import os
+import io
+import json
+import time
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, time as dtime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
 
-DB_PATH = "reminders.db"
+# =========================
+# Security: simple password
+# =========================
+APP_PASSWORD = st.secrets.get("APP_PASSWORD", "test123")
+SESSION_TTL_SEC = 30 * 60      # auto-logout after 30 min idle
+MAX_ATTEMPTS    = 5            # throttle brute-force
+LOCKOUT_SEC     = 60           # 1 min cooldown
+
+def check_password():
+    now = time.time()
+    st.session_state.setdefault("auth_ok", False)
+    st.session_state.setdefault("last_seen", 0.0)
+    st.session_state.setdefault("bad_attempts", 0)
+    st.session_state.setdefault("locked_until", 0.0)
+
+    # active session timeout
+    if st.session_state["auth_ok"]:
+        if now - st.session_state["last_seen"] > SESSION_TTL_SEC:
+            st.session_state["auth_ok"] = False
+        else:
+            st.session_state["last_seen"] = now
+            return True
+
+    # lockout window
+    if now < st.session_state["locked_until"]:
+        st.error("Too many attempts. Try again in a minute.")
+        st.stop()
+
+    st.title("🔒 Private Access")
+    pwd = st.text_input("Enter password:", type="password")
+    if st.button("Login"):
+        if pwd == APP_PASSWORD:
+            st.session_state.update(auth_ok=True, last_seen=now, bad_attempts=0)
+            st.rerun()
+        else:
+            st.session_state["bad_attempts"] += 1
+            if st.session_state["bad_attempts"] >= MAX_ATTEMPTS:
+                st.session_state["locked_until"] = now + LOCKOUT_SEC
+                st.session_state["bad_attempts"] = 0
+            st.error("❌ Incorrect password")
+            st.stop()
+    st.stop()
+
+if not check_password():
+    st.stop()
+
+# Optional logout
+with st.sidebar:
+    if st.button("Logout"):
+        st.session_state["auth_ok"] = False
+        st.rerun()
 
 # =========================
-# DB helpers (simple, safe)
+# App config
+# =========================
+st.set_page_config(page_title="Personal Follow-ups", page_icon="⏰", layout="centered")
+st.title("⏰ Personal Follow-up Reminders")
+
+# Storage paths (local SQLite)
+DATA_DIR = "data"
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_PATH = os.path.join(DATA_DIR, "reminders.db")
+
+# Marker for end-of-day export deduping
+MARKER_PATH = os.path.join(DATA_DIR, "last_export.json")
+
+# End-of-day schedule (Indianapolis local time)
+EOD_TZ = ZoneInfo("America/Indiana/Indianapolis")
+EOD_CUTOFF = dtime(23, 0)  # 11:00 PM local (change if you want)
+
+# =========================
+# DB helpers (SQLite, WAL)
 # =========================
 def init_db():
     with sqlite3.connect(DB_PATH) as con:
+        con.execute("PRAGMA journal_mode=WAL;")   # better durability / read concurrency
+        con.execute("PRAGMA synchronous=NORMAL;") # set to FULL for max durability
         con.execute("""
         CREATE TABLE IF NOT EXISTS reminders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,7 +105,7 @@ def now_utc_dt():
 def add_reminder(ticket: str, note: str, hours: int):
     ticket = (ticket or "").strip()
     note = (note or "").strip()
-    due_at = (now_utc_dt() + timedelta(hours=hours)).isoformat()
+    due_at = (now_utc_dt() + timedelta(hours=int(hours))).isoformat()
     with sqlite3.connect(DB_PATH) as con:
         con.execute(
             "INSERT INTO reminders (created_at, due_at, ticket, note, done) VALUES (?, ?, ?, ?, 0)",
@@ -96,16 +171,46 @@ def was_recently_added(ticket: str, minutes=2) -> bool:
     created = pd.to_datetime(row[0], utc=True, errors="coerce")
     return (pd.Timestamp.now(tz="UTC") - created).total_seconds() < minutes * 60
 
+# =========================
+# End-of-day export helpers
+# =========================
+def _read_last_export_date():
+    if not os.path.exists(MARKER_PATH):
+        return None
+    try:
+        with open(MARKER_PATH, "r") as f:
+            return json.load(f).get("last_export_date")
+    except Exception:
+        return None
 
-# =========
-#   UI
-# =========
-st.set_page_config(page_title="Personal Follow-ups", page_icon="⏰", layout="centered")
-st.title("⏰ Personal Follow-up Reminders")
+def _write_last_export_date(iso_date: str):
+    with open(MARKER_PATH, "w") as f:
+        json.dump({"last_export_date": iso_date}, f)
 
+def dump_sqlite_to_sql_bytes(db_path: str) -> bytes:
+    # SQL dump of schema + data (portable)
+    buf = io.StringIO()
+    with sqlite3.connect(db_path) as con:
+        for line in con.iterdump():
+            buf.write(f"{line}\n")
+    return buf.getvalue().encode("utf-8")
+
+def csv_bytes_from_df(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False).encode("utf-8")
+
+def should_offer_eod_export():
+    """Return (should_export_now, today_iso_str) in Indianapolis local time."""
+    now_local = datetime.now(EOD_TZ)
+    today_str = now_local.date().isoformat()
+    last = _read_last_export_date()
+    return (now_local.time() >= EOD_CUTOFF and last != today_str, today_str)
+
+# =========================
+# UI
+# =========================
 init_db()
 
-# ------------- New reminder form -------------
+# ---- New reminder form ----
 with st.form("new"):
     st.subheader("Add a reminder")
     ticket = st.text_input(
@@ -157,9 +262,9 @@ if open_df.empty:
 else:
     now = pd.Timestamp.now(tz="UTC")
     for _, row in open_df.iterrows():
-        rid       = int(row["id"])
-        ticket    = row["ticket"]
-        note      = row.get("note") or ""
+        rid        = int(row["id"])
+        ticket     = row["ticket"]
+        note       = row.get("note") or ""
         created_at = row["created_at"]
         due_at     = row["due_at"]
 
@@ -243,7 +348,6 @@ else:
           .dt.strftime("%Y-%m-%d %H:%M")
     )
 
-    # Show last 50 completed
     st.dataframe(
         view[["id", "ticket", "note", "created_at", "due_at"]]
             .rename(columns={
@@ -256,47 +360,72 @@ else:
         use_container_width=True,
         hide_index=True,
     )
-    # Optional: prune older completed items (keep the latest 50)
-    colc1, colc2 = st.columns([0.35, 0.65])
-    with colc1:
-        if st.button("🧹 Clear older completed (keep latest 50)"):
-            with sqlite3.connect(DB_PATH) as con:
-                con.execute("""
-                    DELETE FROM reminders
-                    WHERE done = 1
-                      AND id NOT IN (
-                        SELECT id FROM reminders
-                        WHERE done = 1
-                        ORDER BY id DESC
-                        LIMIT 50
-                      )
-                """)
-                con.commit()
-            st.success("Old completed reminders cleared.")
-            st.rerun()
+
+# =========================
+# End-of-day export section
+# =========================
+st.divider()
+st.subheader("End-of-day export (Indianapolis time)")
+
+def offer_and_render_exports():
+    offer, today_str = should_offer_eod_export()
+
+    if offer:
+        st.info(
+            f"🕚 It’s past {EOD_CUTOFF.strftime('%-I:%M %p')} in Indianapolis. "
+            f"You haven’t exported today ({today_str}) yet."
+        )
+
+    col1, col2, col3 = st.columns([0.34, 0.33, 0.33])
+
+    # SQL dump
+    with col1:
+        if st.button("📝 Export SQL dump now"):
+            sql_bytes = dump_sqlite_to_sql_bytes(DB_PATH)
+            _write_last_export_date(today_str)
+            st.success("SQL dump prepared. Use the download button below.")
+            st.download_button(
+                "⬇️ Download reminders_dump.sql",
+                data=sql_bytes,
+                file_name=f"reminders_{today_str}.sql",
+                mime="application/sql"
+            )
+
+    # CSV exports
+    with col2:
+        open_df = fetch_open()
+        done_df_all = fetch_done(limit=10_000)
+        st.download_button(
+            "⬇️ Open reminders (CSV)",
+            data=csv_bytes_from_df(open_df),
+            file_name=f"open_reminders_{today_str}.csv",
+            mime="text/csv"
+        )
+        st.download_button(
+            "⬇️ Completed reminders (CSV)",
+            data=csv_bytes_from_df(done_df_all),
+            file_name=f"completed_reminders_{today_str}.csv",
+            mime="text/csv"
+        )
+
+    # Import from SQL (admin)
+    with col3:
+        with st.expander("🔧 Import from SQL dump (admin)"):
+            up = st.file_uploader("Upload .sql from a previous day", type=["sql"])
+            if up and st.button("Import now"):
+                script = up.read().decode("utf-8")
+                with sqlite3.connect(DB_PATH) as con:
+                    con.executescript("PRAGMA foreign_keys=OFF;")
+                    con.executescript(script)
+                    con.commit()
+                st.success("Import complete.")
+                st.rerun()
+
+offer_and_render_exports()
 
 # -------- Footer --------
 st.markdown("<hr/>", unsafe_allow_html=True)
 st.caption(
-    "Local SQLite storage • No external services • "
-    "Use the buttons to mark done, snooze, or delete. "
-    "Timestamps shown in UTC."
+    "Local SQLite storage • No external services • End-of-day export prepares a .sql backup "
+    "in Indianapolis time so you can download and restore it next day if running on ephemeral hosting."
 )
-with st.expander("⬇️ Export reminders"):
-    all_open = fetch_open()
-    all_done = fetch_done(limit=10_000)   # export more, if you like
-    exp_tabs = st.tabs(["Open", "Completed"])
-    with exp_tabs[0]:
-        st.download_button(
-            "Download open reminders (CSV)",
-            data=all_open.to_csv(index=False).encode("utf-8"),
-            file_name="open_reminders.csv",
-            mime="text/csv",
-        )
-    with exp_tabs[1]:
-        st.download_button(
-            "Download completed reminders (CSV)",
-            data=all_done.to_csv(index=False).encode("utf-8"),
-            file_name="completed_reminders.csv",
-            mime="text/csv",
-        )
