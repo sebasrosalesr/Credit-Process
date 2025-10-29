@@ -5,6 +5,52 @@ import pandas as pd
 import firebase_admin
 from firebase_admin import credentials, db
 import io
+import time, streamlit as st
+
+APP_PASSWORD = st.secrets.get("APP_PASSWORD", "test123")
+SESSION_TTL_SEC = 30 * 60       # 30 min
+MAX_ATTEMPTS    = 5
+LOCKOUT_SEC     = 60            # 1 min cooldown
+
+def check_password():
+    now = time.time()
+    # init state
+    st.session_state.setdefault("auth_ok", False)
+    st.session_state.setdefault("last_seen", 0.0)
+    st.session_state.setdefault("bad_attempts", 0)
+    st.session_state.setdefault("locked_until", 0.0)
+
+    # active session timeout
+    if st.session_state["auth_ok"]:
+        if now - st.session_state["last_seen"] > SESSION_TTL_SEC:
+            st.session_state["auth_ok"] = False
+        else:
+            st.session_state["last_seen"] = now
+            return True
+
+    # lockout window after too many failures
+    if now < st.session_state["locked_until"]:
+        st.error("Too many attempts. Try again in a minute.")
+        st.stop()
+
+    st.title("🔒 Private Access")
+    pwd = st.text_input("Enter password:", type="password")
+    if st.button("Login"):
+        if pwd == APP_PASSWORD:
+            st.session_state.update(auth_ok=True, last_seen=now, bad_attempts=0)
+            st.rerun()
+        else:
+            st.session_state["bad_attempts"] += 1
+            if st.session_state["bad_attempts"] >= MAX_ATTEMPTS:
+                st.session_state["locked_until"] = now + LOCKOUT_SEC
+                st.session_state["bad_attempts"] = 0
+            st.error("❌ Incorrect password")
+            st.stop()
+    st.stop()
+
+# Gate the app
+if not check_password():
+    st.stop()
 
 # =========================
 # Streamlit + Firebase Init
@@ -149,3 +195,8 @@ with c2:
     st.metric("Filtered rows", f"{len(df_view):,}")
 with c3:
     st.metric("Max age (days)", f"{int(df_view['Age (days)'].max()) if len(df_view) else 0}")
+
+# Optional logout button:
+if st.sidebar.button("Logout"):
+    st.session_state["auth_ok"] = False
+    st.rerun()
