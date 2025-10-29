@@ -14,7 +14,7 @@ import streamlit as st
 # Security: simple password
 # =========================
 APP_PASSWORD = st.secrets.get("APP_PASSWORD", "test123")
-SESSION_TTL_SEC = 30 * 60      # auto-logout after 30 min idle
+SESSION_TTL_SEC = 3000 * 60      # auto-logout after 30 min idle
 MAX_ATTEMPTS    = 5            # throttle brute-force
 LOCKOUT_SEC     = 60           # 1 min cooldown
 
