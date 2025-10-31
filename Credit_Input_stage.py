@@ -161,7 +161,7 @@ if uploaded_file:
             'BMONCZYK', 'SADAMS', 'DW/EB/MC/MF/SM', 'DWEBMCMFSMSP', 'DW/EB/MF/MC/SP/',
             'JC/JT', 'RF/AR', 'RDORAN', 'SMARCIANO', 'JCROSGROVE', 'MC/MF', 'MC/SM',
             'BOBGOLD', 'ELI/BOB', 'MFINE', 'CFAULKNER', 'NLANDAU', 'MF', 'ALLMED',
-            'CW/SM', 'SUB02', 'AOBEZIL', 'EB/MC/MF', 'JTIPTON', 'AR/JS', 'DW/MF',
+            'CW/SM', 'AOBEZIL', 'EB/MC/MF', 'JTIPTON', 'AR/JS', 'DW/MF',
             'BRANDALL', 'KM/RM', 'MDESIMONE', 'MEYER', 'MC', 'CHI/NL', 'BBINDEL',
             'MWEENIG', 'NMERRITT', 'DW', 'SDECKERT', 'MC/MF/SM', 'ELIB/MC/MF/SIMI',
             'DW/MF/SM', 'EB/SG', 'EB/MC/MF/SG/SM', 'NBITTERMAN', 'SM/MC/EB/MF/AL',
@@ -177,7 +177,7 @@ if uploaded_file:
             'JM/AS', 'CRAMIREZ', 'CF/AR', 'SM', 'TJ/NL', 'AO/MA', 'MCHASE',
             'KSCHWIETERMAN', 'ELI BERKOVICH', 'CW/TJ', 'MW/TJ', 'KEMORY', 'RA', 'BG',
             'PECK', 'EB/NB/C/F/M/P', 'CROBINSON', 'MF/NL', 'SG', 'SD/SM',
-            'EBMCMFSMSPBW', 'BB/MDS', 'BFR', 'TJ/SA', 'NB/JE', 'BOB/MF/SIMI/MC',
+            'DW/EB/MC/MF/SM/SP', 'BB/MDS', 'BFR', 'TJ/SA', 'NB/JE', 'BOB/MF/SIMI/MC',
             'DW/MC/MF/SM', 'CLANDAU/CWYLER', 'ELIB/MC/MF/RG/S'
         ])
         sales_rep_input = st.selectbox("👤 Sales Rep", options=sales_rep_options)
