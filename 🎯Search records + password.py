@@ -7,19 +7,28 @@ import io
 from typing import List, Set
 
 # =========================
-# App & Auth
+# CONFIG (edit as needed)
 # =========================
 st.set_page_config(page_title="Credit Request Search Tool", layout="wide")
 
-APP_PASSWORD = st.secrets.get("APP_PASSWORD", "test123")  # use Streamlit secrets in prod
-RTN_FIELD = "RTN_CR_No"  # <-- change here if your RTN field differs
-INVOICE_FIELD = "Invoice Number"
-ITEM_FIELD = "Item Number"
-TICKET_FIELD = "Ticket Number"
-STATUS_FIELD = "Status"
+APP_PASSWORD   = st.secrets.get("APP_PASSWORD", "test123")
+DB_URL         = "https://creditapp-tm-default-rtdb.firebaseio.com/"
+DB_NODE        = "credit_requests"
 
+# Field names (adjust if you reindex/rename)
+RTN_FIELD      = "RTN_CR_No"
+INVOICE_FIELD  = "Invoice Number"
+ITEM_FIELD     = "Item Number"
+TICKET_FIELD   = "Ticket Number"
+STATUS_FIELD   = "Status"
+
+MONEY_FIELDS   = ["Credit Request Total", "Extended Price", "Unit Price", "Corrected Unit Price"]
+ID_FIELDS      = [INVOICE_FIELD, ITEM_FIELD, TICKET_FIELD, RTN_FIELD, "Record ID"]
+
+# =========================
+# AUTH
+# =========================
 def check_password() -> bool:
-    """Simple password gate."""
     if st.session_state.get("auth_ok"):
         return True
     st.title("🔒 Private Access")
@@ -42,40 +51,45 @@ with st.sidebar:
         st.rerun()
 
 # =========================
-# Firebase Init
+# FIREBASE INIT
 # =========================
 firebase_config = dict(st.secrets["firebase"])
 firebase_config["private_key"] = firebase_config["private_key"].replace("\\n", "\n")
 cred = credentials.Certificate(firebase_config)
 if not firebase_admin._apps:
-    firebase_admin.initialize_app(cred, {
-        "databaseURL": "https://creditapp-tm-default-rtdb.firebaseio.com/"
-    })
-ref = db.reference("credit_requests")
+    firebase_admin.initialize_app(cred, {"databaseURL": DB_URL})
+ref = db.reference(DB_NODE)
 
 # =========================
-# Helpers
+# HELPERS
 # =========================
 def safe_str(v) -> str:
     return "" if v is None else str(v)
 
 def norm(s: str) -> str:
-    """Normalize for case-insensitive exact matches."""
+    """Case-insensitive normalized key."""
     return safe_str(s).strip().upper()
 
+def clean_num_str(x):
+    """Keep IDs as text; drop float artifacts like 1004360.0 -> 1004360."""
+    s = "" if x is None else str(x).strip()
+    if s.endswith(".0"):
+        try:
+            f = float(s)
+            if f.is_integer():
+                s = str(int(f))
+        except ValueError:
+            pass
+    return s
+
 def parse_pasted_list(raw: str) -> List[str]:
-    """
-    Parse a pasted list of values separated by newlines/commas/tabs/spaces.
-    - trims, dedupes (preserving order), drops empties
-    - normalizes to uppercase for case-insensitive comparisons
-    """
+    """Parse newline/comma/tab/space list -> deduped, UPPER tokens."""
     if not raw:
         return []
     normalized = raw.replace(",", "\n").replace("\t", "\n")
     tokens = [t.strip() for t in normalized.split("\n") if t.strip()]
     split_tokens: List[str] = []
     for t in tokens:
-        # split on spaces if there are a few (avoid splitting long sentences)
         if " " in t and t.count(" ") < 3:
             split_tokens.extend([s for s in t.split(" ") if s.strip()])
         else:
@@ -93,9 +107,7 @@ def parse_pasted_list(raw: str) -> List[str]:
 # UI
 # =========================
 st.title("🔍 Credit Request Search Tool")
-st.markdown(
-    "Search by Ticket, Invoice, Item, Invoice+Item Pair, or use **bulk paste** for Invoices or RTNs."
-)
+st.markdown("Search by Ticket, Invoice, Item, Invoice+Item Pair, or use **bulk paste** for Invoices or RTNs.")
 
 search_type = st.selectbox(
     "Search By",
@@ -109,9 +121,9 @@ search_type = st.selectbox(
     ],
 )
 
-input_ticket = st.text_input("🎫 Ticket Number") if search_type == "Ticket Number" else None
+input_ticket  = st.text_input("🎫 Ticket Number") if search_type == "Ticket Number" else None
 input_invoice = st.text_input("📄 Invoice Number") if search_type in ["Invoice Number", "Invoice + Item Pair"] else None
-input_item = st.text_input("📦 Item Number") if search_type in ["Item Number", "Invoice + Item Pair"] else None
+input_item    = st.text_input("📦 Item Number")   if search_type in ["Item Number", "Invoice + Item Pair"] else None
 
 uploaded_file = (
     st.file_uploader("📤 (Optional) Upload CSV with 'Invoice Number' and 'Item Number'", type=["csv"])
@@ -125,7 +137,7 @@ if search_type in ["Multiple Invoices (paste list)", "Multiple RTNs (paste list)
     bulk_text = st.text_area(f"📋 {label}", height=200, placeholder="inv13727629\ninv13740599\nINV14015686\nRTNCM0034858")
 
 # =========================
-# Search
+# SEARCH
 # =========================
 if st.button("🔎 Search"):
     try:
@@ -135,7 +147,7 @@ if st.button("🔎 Search"):
         pasted_values: List[str] = []
 
         if data:
-            # Pre-parse bulk lists (already normalized to UPPER)
+            # bulk list
             if search_type in ["Multiple Invoices (paste list)", "Multiple RTNs (paste list)"]:
                 pasted_values = parse_pasted_list(bulk_text or "")
                 if not pasted_values:
@@ -143,12 +155,12 @@ if st.button("🔎 Search"):
                     st.stop()
             pasted_set = set(pasted_values)
 
-            # Normalize single-inputs to UPPER for comparisons
-            find_ticket = norm(input_ticket) if input_ticket else ""
+            # single inputs
+            find_ticket  = norm(input_ticket)  if input_ticket  else ""
             find_invoice = norm(input_invoice) if input_invoice else ""
-            find_item = norm(input_item) if input_item else ""
+            find_item    = norm(input_item)    if input_item    else ""
 
-            # If CSV pair mode with file, prep pair set after loop
+            # CSV pair set
             pair_wanted = set()
             pair_mode_with_csv = (search_type == "Invoice + Item Pair" and uploaded_file is not None)
             if pair_mode_with_csv:
@@ -157,42 +169,34 @@ if st.button("🔎 Search"):
                     st.error(f"CSV must contain '{INVOICE_FIELD}' and '{ITEM_FIELD}' columns.")
                     st.stop()
                 pair_df[INVOICE_FIELD] = pair_df[INVOICE_FIELD].astype(str).str.strip().str.upper()
-                pair_df[ITEM_FIELD] = pair_df[ITEM_FIELD].astype(str).str.strip().str.upper()
+                pair_df[ITEM_FIELD]    = pair_df[ITEM_FIELD].astype(str).str.strip().str.upper()
                 pair_wanted = set(zip(pair_df[INVOICE_FIELD], pair_df[ITEM_FIELD]))
 
-            # Iterate DB
-            for key, record in data.items():
-                inv = norm(record.get(INVOICE_FIELD, ""))
-                item = norm(record.get(ITEM_FIELD, ""))
+            # iterate DB
+            for key, record in (data or {}).items():
+                inv    = norm(record.get(INVOICE_FIELD, ""))
+                item   = norm(record.get(ITEM_FIELD, ""))
                 ticket = norm(record.get(TICKET_FIELD, ""))
                 status = norm(record.get(STATUS_FIELD, ""))
-                rtn = norm(record.get(RTN_FIELD, ""))
+                rtn    = norm(record.get(RTN_FIELD, ""))
 
                 match = False
-
                 if search_type == "Ticket Number":
-                    # match exact ticket or if ticket text appears in status
                     if ticket and (ticket == find_ticket or (find_ticket and find_ticket in status)):
                         match = True
-
                 elif search_type == "Invoice Number":
                     if inv and inv == find_invoice:
                         match = True
-
                 elif search_type == "Item Number":
                     if item and item == find_item:
                         match = True
-
                 elif search_type == "Invoice + Item Pair":
                     if (not pair_mode_with_csv) and input_invoice and input_item:
                         if inv == find_invoice and item == find_item:
                             match = True
-                    # CSV case handled after loop using pair_wanted
-
                 elif search_type == "Multiple Invoices (paste list)":
                     if inv and inv in pasted_set:
                         match = True
-
                 elif search_type == "Multiple RTNs (paste list)":
                     if rtn and rtn in pasted_set:
                         match = True
@@ -202,9 +206,9 @@ if st.button("🔎 Search"):
                     out["Record ID"] = key
                     matches.append(out)
 
-            # Handle CSV pair matches post-iteration
+            # CSV pair matches post-iteration
             if pair_mode_with_csv and pair_wanted:
-                for key, record in data.items():
+                for key, record in (data or {}).items():
                     inv = norm(record.get(INVOICE_FIELD, ""))
                     item = norm(record.get(ITEM_FIELD, ""))
                     if (inv, item) in pair_wanted:
@@ -214,7 +218,7 @@ if st.button("🔎 Search"):
                         out["Search_Item"] = item
                         matches.append(out)
 
-            # Build Not Found list for bulk modes
+            # not found list for bulk
             if search_type in ["Multiple Invoices (paste list)", "Multiple RTNs (paste list)"]:
                 field_name = INVOICE_FIELD if "Invoices" in search_type else RTN_FIELD
                 matched_values = set()
@@ -225,18 +229,47 @@ if st.button("🔎 Search"):
                 not_found = [v for v in pasted_values if v not in matched_values]
 
         # =========================
-        # Results UI
+        # RESULTS UI (clean display)
         # =========================
         if matches:
             st.success(f"✅ {len(matches)} record(s) found.")
 
-            # Bulk summary
             if search_type in ["Multiple Invoices (paste list)", "Multiple RTNs (paste list)"]:
                 matched_count = len(set(pasted_values) - set(not_found))
                 st.info(f"🔎 Pasted: {len(pasted_values)} • ✅ Matched: {matched_count} • ❌ Not found: {len(not_found)}")
 
             df_export = pd.DataFrame(matches)
-            st.dataframe(df_export, use_container_width=True)
+
+            # Normalize display: keep IDs as text (no .0), and uppercase for consistency
+            for col in ID_FIELDS:
+                if col in df_export.columns:
+                    df_export[col] = df_export[col].map(clean_num_str).astype("string")
+            for col in [INVOICE_FIELD, ITEM_FIELD, TICKET_FIELD]:
+                if col in df_export.columns:
+                    df_export[col] = df_export[col].str.upper()
+
+            # Money rounding to kill float noise
+            for col in MONEY_FIELDS:
+                if col in df_export.columns:
+                    df_export[col] = pd.to_numeric(df_export[col], errors="coerce").round(2)
+
+            # Render as text so Streamlit won't auto-cast to float
+            st.dataframe(
+                df_export,
+                use_container_width=True,
+                column_config={
+                    INVOICE_FIELD: st.column_config.TextColumn(),
+                    ITEM_FIELD:    st.column_config.TextColumn(),
+                    TICKET_FIELD:  st.column_config.TextColumn(),
+                    RTN_FIELD:     st.column_config.TextColumn(),
+                    "Record ID":   st.column_config.TextColumn(),
+                    # optional money pretty-print:
+                    "Credit Request Total": st.column_config.NumberColumn(format="%.2f"),
+                    "Extended Price":       st.column_config.NumberColumn(format="%.2f"),
+                    "Unit Price":           st.column_config.NumberColumn(format="%.2f"),
+                    "Corrected Unit Price": st.column_config.NumberColumn(format="%.2f"),
+                },
+            )
 
             with st.expander("📦 JSON view (per record)"):
                 for i, rec in enumerate(matches, 1):
@@ -247,7 +280,7 @@ if st.button("🔎 Search"):
                 with st.expander("❌ Not Found"):
                     st.code("\n".join(not_found))
 
-            # Export CSV
+            # Clean CSV export (same cleaned strings)
             csv_buffer = io.StringIO()
             df_export.to_csv(csv_buffer, index=False)
             st.download_button(
