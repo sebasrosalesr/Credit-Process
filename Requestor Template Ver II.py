@@ -5,7 +5,7 @@ import io, re, tempfile, os
 # =========================
 # CONFIG / CONSTANTS
 # =========================
-ACCOUNT_CODE_AS_CUSTOMER_NUMBER = True  # FLD02 as "Customer Number"
+ACCOUNT_CODE_AS_CUSTOMER_NUMBER = True  # Use FLD02 (account code) as Customer Number
 
 standard_columns = [
     'Date', 'Credit Type', 'Issue Type', 'Customer Number', 'Invoice Number',
@@ -53,7 +53,7 @@ doc_analysis_mapping = {
     'Ticket Number': None
 }
 
-# --- NEW: JF Request Mapping ---
+# --- JF Request Mapping ---
 jf_mapping = {
     'Date': 'Doc Date',
     'Credit Type': None,
@@ -79,7 +79,6 @@ jf_mapping = {
 # COMMON HELPERS
 # =========================
 def _money_to_float(s):
-    """coerce money-like strings to float (handles $, commas, parentheses)"""
     if pd.isna(s): return None
     s = str(s).strip()
     if s == "": return None
@@ -104,19 +103,19 @@ def convert_df_to_excel(df):
     return output.getvalue()
 
 # =========================
-# EXCEL PATHS (your existing flows)
+# EXCEL FLOWS
 # =========================
 def load_doc_analysis_file(file):
     raw_df = pd.read_excel(file, header=None)
     header_row = None
-    for i in range(10):
+    for i in range(min(10, len(raw_df))):
         row = raw_df.iloc[i].astype(str).str.upper().str.strip()
         if any(col in row.values for col in ['SOPNUMBE', 'SOP NUMBER']) and \
            any(col in row.values for col in ['ITEMNMBR', 'ITEM NUMBER']):
             header_row = i
             break
     if header_row is None:
-        raise ValueError("❌ Could not detect header row. Ensure SOPNUMBE/SOP Number and ITEMNMBR/Item Number exist.")
+        raise ValueError("❌ Could not detect header row. Need SOPNUMBE/SOP Number and ITEMNMBR/Item Number.")
     df = pd.read_excel(file, header=header_row)
     df.columns = df.columns.str.strip()
     return df
@@ -149,7 +148,7 @@ def convert_file(df, mapping):
     return df_out
 
 # =========================
-# PDF PARSING (TwinMed invoices)
+# PDF PARSING (TwinMed)
 # =========================
 def norm_money_pdf(s: str):
     if not s: return None
@@ -172,24 +171,15 @@ def get_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
         return "\n".join((p.extract_text() or "") for p in pdf.pages)
 
 def parse_header_from_text(text: str):
-    # Invoice No
-    invoice_no = first_match(r'^\s*Invoice\s*No\s*:\s*([A-Z0-9\-]+)\s*$', text) \
-              or first_match(r'Invoice\s*No\s*:\s*([A-Z0-9\-]+)', text)
-
-    # Invoice Date (ONLY from "Invoice Date:")
+    invoice_no = first_match(r'Invoice\s*No\s*:\s*([A-Z0-9\-]+)', text)
     date_pat = r'([A-Za-z]{3,}\s+\d{1,2},?\s*\d{2,4}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})'
-    invoice_date_raw = first_match(rf'^\s*Invoice\s*Date\s*:\s*{date_pat}\s*$', text) \
-                    or first_match(rf'Invoice\s*Date\s*:\s*{date_pat}', text)
+    invoice_date_raw = first_match(rf'Invoice\s*Date\s*:\s*{date_pat}', text)
     invoice_date = None
     if invoice_date_raw:
         parsed = pd.to_datetime(invoice_date_raw, errors='coerce')
         invoice_date = parsed.date().isoformat() if not pd.isna(parsed) else invoice_date_raw
 
-    # Customer Account FLD02 No.: 808  → prefer FLD02 if flag set
-    account_code = None
-    account_no = None
-    m = re.search(r'^\s*Customer\s+Account\s+([A-Z0-9\-]+)\s+No\.\s*:\s*([A-Z0-9\-]+)\s*$',
-                  text, flags=re.I|re.M)
+    m = re.search(r'Customer\s+Account\s+([A-Z0-9\-]+)\s+No\.\s*:\s*([A-Z0-9\-]+)', text, re.I)
     if m:
         account_code, account_no = m.group(1).strip(), m.group(2).strip()
         customer_no = account_code if ACCOUNT_CODE_AS_CUSTOMER_NUMBER else account_no
@@ -198,11 +188,7 @@ def parse_header_from_text(text: str):
         account_no   = first_match(r'Customer\s+(?:No\.|Number)\s*:\s*([A-Z0-9\-]+)', text)
         customer_no  = account_code if ACCOUNT_CODE_AS_CUSTOMER_NUMBER and account_code else account_no
 
-    return {
-        "invoice_no": invoice_no,
-        "invoice_date": invoice_date,
-        "customer_no": customer_no
-    }
+    return {"invoice_no": invoice_no, "invoice_date": invoice_date, "customer_no": customer_no}
 
 def _normalize_headers(cells):
     return [re.sub(r'\s+', ' ', str(x).strip().lower()) for x in cells]
@@ -227,7 +213,6 @@ def is_item_row(cells):
     return re.search(r'\$?\d+(?:,\d{3})*(?:\.\d{2})?', " ".join(map(str, cells))) is not None
 
 def camelot_extract_tempfile(pdf_bytes: bytes):
-    """Camelot needs a path, so write to a temp file."""
     try:
         import camelot
     except Exception:
@@ -237,13 +222,11 @@ def camelot_extract_tempfile(pdf_bytes: bytes):
         tmp_path = tmp.name
     dfs = []
     try:
-        # lattice first
         try:
             t = camelot.read_pdf(tmp_path, flavor="lattice", pages="all")
             if len(t): dfs.extend([x.df for x in t])
         except Exception:
             pass
-        # stream fallback
         try:
             t = camelot.read_pdf(tmp_path, flavor="stream", pages="all", row_tol=10, column_tol=15)
             if len(t): dfs.extend([x.df for x in t])
@@ -268,7 +251,7 @@ def pick_items_table(dfs):
 
 def parse_items_from_table(df):
     if df is None or df.empty: return []
-    # find header row in first 3 rows
+    # try to find header row in first 3 rows
     header_idx = None
     for r in range(min(3, len(df))):
         cells = df.iloc[r].astype(str).tolist()
@@ -288,26 +271,27 @@ def parse_items_from_table(df):
                 if re.fullmatch(r'[A-Z0-9\-\/]{4,}', cand):
                     item_no = cand
             if not item_no: continue
-            # qty
+            # qty (only if numeric)
             qty = None
             if colmap["qty"] is not None and colmap["qty"] < len(cells):
                 qraw = cells[colmap["qty"]].strip()
-                if re.fullmatch(r'\d{1,4}', qraw): qty = int(qraw)
-            # unit price from Price col
+                if re.fullmatch(r'\d{1,4}', qraw): 
+                    qty = int(qraw)
+            # prices
             unit_price = None
             if colmap["price"] is not None and colmap["price"] < len(cells):
                 unit_price = norm_money_pdf(cells[colmap["price"]])
-            # extended from Total col
             ext_price = None
             if colmap["total"] is not None and colmap["total"] < len(cells):
                 ext_price = norm_money_pdf(cells[colmap["total"]])
-            # gentle fallback
+            # gentle fallback if needed
             if unit_price is None or ext_price is None:
                 monies = [norm_money_pdf(c) for c in cells if norm_money_pdf(c) is not None]
                 if unit_price is None and len(monies) >= 2: unit_price = monies[-2]
                 if ext_price  is None and len(monies) >= 1: ext_price  = monies[-1]
             rows.append({"Item Number": item_no, "QTY": qty, "Unit Price": unit_price, "Extended Price": ext_price})
         return rows
+
     # legacy heuristic if no headers found
     for i in range(len(df)):
         cells = df.iloc[i].astype(str).tolist()
@@ -315,8 +299,9 @@ def parse_items_from_table(df):
         first = cells[0].strip()
         qty = None
         for c in cells:
-            if re.fullmatch(r'\d{1,4}', c.strip()):
-                qty = int(c.strip()); break
+            tok = c.strip()
+            if re.fullmatch(r'\d{1,4}', tok):
+                qty = int(tok); break
         monies = [norm_money_pdf(c) for c in cells if norm_money_pdf(c) is not None]
         unit_price = ext_price = None
         if len(monies) >= 2:
@@ -348,25 +333,24 @@ def regex_items_fallback(text: str):
         )
         if m:
             unit_price = norm_money_pdf(m.group(1))
-            qty        = int(m.group(2))
+            qty_raw    = m.group(2)
+            qty        = int(qty_raw) if qty_raw.isdigit() else None
             ext_price  = norm_money_pdf(m.group(3))
         else:
             monies = re.findall(r'\$?\d{1,3}(?:,\d{3})*(?:\.\d{2})?', tail)
             if not monies: continue
-            ext_price = norm_money_pdf(monies[-1])
+            ext_price  = norm_money_pdf(monies[-1])
             unit_price = norm_money_pdf(monies[-2]) if len(monies) >= 2 else None
             ints = re.findall(r'\b\d{1,4}\b', tail)
-            qty = int(ints[-1]) if ints else None
+            qty  = int(ints[-1]) if ints and ints[-1].isdigit() else None
 
         out.append({"Item Number": item_no, "QTY": qty, "Unit Price": unit_price, "Extended Price": ext_price})
     return out
 
 def pdf_to_standard_rows(pdf_bytes: bytes):
-    # 1) header
     text = get_text_from_pdf_bytes(pdf_bytes)
     header = parse_header_from_text(text)
 
-    # 2) try camelot (tables)
     dfs = camelot_extract_tempfile(pdf_bytes)
     items = []
     if dfs:
@@ -375,7 +359,6 @@ def pdf_to_standard_rows(pdf_bytes: bytes):
     if not items:
         items = regex_items_fallback(text)
 
-    # 3) map to standard rows
     rows = []
     for it in items:
         rows.append({
@@ -422,7 +405,7 @@ if uploaded_files:
         name = uploaded_file.name
         suffix = os.path.splitext(name)[1].lower()
 
-        # ---------- PDF PATH ----------
+        # ---------- PDF ----------
         if suffix == ".pdf":
             try:
                 st.info(f"🧾 Parsing PDF Invoice — {name}")
@@ -438,29 +421,27 @@ if uploaded_files:
                 st.warning(f"⚠️ Skipped PDF `{name}`: {e}")
             continue
 
-        # ---------- EXCEL PATHS (your existing logic) ----------
+        # ---------- EXCEL ----------
         try:
             df_sample = pd.read_excel(uploaded_file, nrows=5)
             sample_cols = set(df_sample.columns.str.strip())
 
-            # 1) Macro format detection
+            # 1) Macro
             if {'Req Date', 'Cust ID', 'Total Credit Amt'}.issubset(sample_cols):
                 st.info(f"📘 Format Detected: Macro File — {name}")
                 df_full = pd.read_excel(uploaded_file)
                 converted = convert_file(df_full, macro_mapping)
-                # Pull total directly
                 converted['Credit Request Total'] = df_full.get('Total Credit Amt')
                 converted['Source File'] = name
                 converted['Format'] = 'Macro File'
                 converted_frames.append(converted)
                 continue
 
-            # 2) JF Request detection (Doc Date + Difference to Be Credited present)
+            # 2) JF Request
             jf_hits = {'Doc Date', 'SOP Number', 'Cust Number'}
             if jf_hits.issubset(sample_cols) or 'Difference to Be Credited' in sample_cols:
                 st.info(f"🟣 Format Detected: JF Request — {name}")
                 df_full = pd.read_excel(uploaded_file)
-                # money numeric
                 df_full = convert_money_columns(
                     df_full,
                     ['UOM Price','Extended Price','New UOM Price','New Extended Price','Difference to Be Credited']
@@ -471,7 +452,7 @@ if uploaded_files:
                 converted_frames.append(converted)
                 continue
 
-            # 3) Fallback to DOC Analysis (with header sniff)
+            # 3) DOC Analysis
             st.info(f"🔍 Trying to detect DOC Analysis format — {name}")
             df_doc = load_doc_analysis_file(uploaded_file)
             df_doc = filter_doc_analysis(df_doc)
@@ -485,8 +466,7 @@ if uploaded_files:
 
     if converted_frames:
         final_df = pd.concat(converted_frames, ignore_index=True)
-
-        # ensure numeric in standard numeric columns for consistency
+        # numeric consistency
         numeric_like = [
             'QTY','Unit Price','Extended Price','Corrected Unit Price',
             'Extended Correct Price','Item Non-Taxable Credit','Item Taxable Credit',
