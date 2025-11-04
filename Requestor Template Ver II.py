@@ -1,28 +1,25 @@
 # ============================
-# TwinMed Invoice → Standard Schema (Streamlit)
-# (with preview, fixed unit-price from Price col)
+# TwinMed Invoice → Standard Schema (Streamlit, fixed Price→UnitPrice & regex groups)
 # ============================
 from __future__ import annotations
 import io, os, re, json, tempfile
 from typing import List, Dict, Optional, Tuple
 
-import pandas as pd
 import streamlit as st
-import pdfplumber
+import pandas as pd
 
 # ---------- UI CONFIG ----------
-st.set_page_config(page_title="TwinMed PDF → Standard Schema", layout="wide")
+st.set_page_config(page_title="TwinMed Invoice → Standard Schema", layout="wide")
 st.title("🧾 TwinMed Invoice → Standard Schema")
-st.caption("Parses TwinMed invoice PDFs and outputs rows in your standard format. Unit Price comes from the **Price** column when available.")
+st.caption("Parses TwinMed invoice PDFs and outputs rows in your standard format. "
+           "Unit Price comes from the **Price** column when available.")
 
-# ---------- APP OPTIONS ----------
-ACCOUNT_CODE_AS_CUSTOMER_NUMBER = st.checkbox(
+use_account_code = st.checkbox(
     "Use account code (e.g., FLD02) as Customer Number",
     value=True,
-    help="If unchecked, uses the numeric 'Customer Account No.' instead when available."
+    help="When 'Customer Account FLD02 No.: 808' appears, use FLD02 instead of 808."
 )
 
-# ---------- SCHEMA ----------
 STANDARD_COLUMNS = [
     'Date','Credit Type','Issue Type','Customer Number','Invoice Number',
     'Item Number','QTY','Unit Price','Extended Price','Corrected Unit Price',
@@ -46,13 +43,15 @@ DEFAULTS = {
 
 # ---------- HELPERS ----------
 def norm_money(s: Optional[str]) -> Optional[float]:
-    if not s: return None
+    if not s:
+        return None
     s = s.strip().replace('$', '')
     s = re.sub(r',(?!\d{3}\b)', '', s)  # drop stray commas
     neg = s.startswith('(') and s.endswith(')')
     s = s.replace('(', '').replace(')', '')
     m = re.search(r'-?\d+(?:\.\d{2})?', s)
-    if not m: return None
+    if not m:
+        return None
     v = float(m.group(0))
     return -v if neg else v
 
@@ -60,16 +59,17 @@ def first_match(pattern: str, text: str, flags=re.I|re.M) -> Optional[str]:
     m = re.search(pattern, text, flags)
     return m.group(1).strip() if m else None
 
-def get_text_from_bytes(pdf_bytes: bytes) -> str:
+def get_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
+    import pdfplumber
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         return "\n".join((p.extract_text() or "") for p in pdf.pages)
 
-def parse_header(text: str, use_account_code: bool) -> Dict[str, Optional[str]]:
+def parse_header(text: str, prefer_account_code: bool) -> Dict[str, Optional[str]]:
     # Invoice No
     invoice_no = first_match(r'^\s*Invoice\s*No\s*:\s*([A-Z0-9\-]+)\s*$', text) \
               or first_match(r'Invoice\s*No\s*:\s*([A-Z0-9\-]+)', text)
 
-    # Invoice Date (ONLY from "Invoice Date:")
+    # Invoice Date (only from 'Invoice Date:')
     date_pat = r'([A-Za-z]{3,}\s+\d{1,2},?\s*\d{2,4}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})'
     invoice_date_raw = first_match(rf'^\s*Invoice\s*Date\s*:\s*{date_pat}\s*$', text) \
                     or first_match(rf'Invoice\s*Date\s*:\s*{date_pat}', text)
@@ -78,20 +78,20 @@ def parse_header(text: str, use_account_code: bool) -> Dict[str, Optional[str]]:
         parsed = pd.to_datetime(invoice_date_raw, errors='coerce')
         invoice_date = parsed.date().isoformat() if not pd.isna(parsed) else invoice_date_raw
 
-    # Customer Account FLD02 No.: 808  -> prefer FLD02 if flag is True
+    # Customer Account FLD02 No.: 808
     account_code = None
     account_no = None
     m = re.search(r'^\s*Customer\s+Account\s+([A-Z0-9\-]+)\s+No\.\s*:\s*([A-Z0-9\-]+)\s*$',
                   text, flags=re.I|re.M)
     if m:
         account_code, account_no = m.group(1).strip(), m.group(2).strip()
-        customer_no = account_code if use_account_code else account_no
+        customer_no = account_code if prefer_account_code else account_no
     else:
         account_code = first_match(r'Customer\s+Account\s+([A-Z0-9\-]+)\b', text)
         account_no   = first_match(r'Customer\s+(?:No\.|Number)\s*:\s*([A-Z0-9\-]+)', text)
-        customer_no  = account_code if use_account_code and account_code else account_no
+        customer_no  = account_code if prefer_account_code and account_code else account_no
 
-    # Totals (for sanity check / optional)
+    # Totals
     subtotal = first_match(r'^\s*Sub\s*Total\s+([$\(\)0-9,.\-]+)\s*$', text) \
            or first_match(r'^\s*Subtotal\s+([$\(\)0-9,.\-]+)\s*$', text)
     tax      = first_match(r'^\s*Tax\s+([$\(\)0-9,.\-]+)\s*$', text)
@@ -108,18 +108,17 @@ def parse_header(text: str, use_account_code: bool) -> Dict[str, Optional[str]]:
         "total": norm_money(total) if total else None,
     }
 
-def camelot_extract_from_bytes(pdf_bytes: bytes) -> List[pd.DataFrame]:
-    """
-    Camelot needs a real path. If camelot isn't installed or fails, return [].
-    """
+def camelot_extract_tempfile(pdf_bytes: bytes):
+    """Run Camelot (needs a path), returns list of DataFrames. Safe if Camelot is unavailable."""
     try:
         import camelot
     except Exception:
         return []
-    # write a temp file
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp.write(pdf_bytes)
         tmp_path = tmp.name
+
     dfs = []
     try:
         try:
@@ -135,21 +134,22 @@ def camelot_extract_from_bytes(pdf_bytes: bytes) -> List[pd.DataFrame]:
     finally:
         try: os.remove(tmp_path)
         except Exception: pass
+
     return dfs
 
-def is_item_row(row: List[str]) -> bool:
-    if not row or not isinstance(row[0], str): return False
-    if not re.fullmatch(r'[A-Z0-9\-\/]{4,}', row[0].strip()): return False
-    return re.search(r'\$?\d+(?:,\d{3})*(?:\.\d{2})?', " ".join(row)) is not None
+def is_item_row(cells: List[str]) -> bool:
+    if not cells:
+        return False
+    first = str(cells[0]).strip()
+    if not re.fullmatch(r'[A-Z0-9\-\/]{4,}', first):
+        return False
+    return re.search(r'\$?\d+(?:,\d{3})*(?:\.\d{2})?', " ".join(map(str, cells))) is not None
 
 def _normalize_headers(cells):
     return [re.sub(r'\s+', ' ', str(x).strip().lower()) for x in cells]
 
 def _build_col_map(header_cells):
-    """
-    Map fuzzy header names to indices.
-    Looks for: item, price, unit, qty, total, description.
-    """
+    """Map fuzzy header names to indices"""
     h = _normalize_headers(header_cells)
     idx = { "item": None, "price": None, "unit": None, "qty": None, "total": None, "desc": None }
     for i, val in enumerate(h):
@@ -159,12 +159,13 @@ def _build_col_map(header_cells):
         if idx["qty"]   is None and ("qty" in val or "quantity" in val): idx["qty"]   = i
         if idx["total"] is None and ("total" in val): idx["total"] = i
         if idx["desc"]  is None and ("desc" in val or "description" in val): idx["desc"]  = i
-    if idx["item"] is None and len(h) > 0: idx["item"] = 0  # fallback
+    if idx["item"] is None and len(h) > 0: idx["item"] = 0
     return idx
 
-def pick_items_table(dfs: List[pd.DataFrame]) -> Optional[pd.DataFrame]:
-    if not dfs: return None
-    def score(df: pd.DataFrame) -> Tuple[int, int]:
+def pick_items_table(dfs):
+    if not dfs:
+        return None
+    def score(df):
         headers = " ".join(df.iloc[0].astype(str).tolist()).lower() if len(df) else ""
         hits = sum(kw in headers for kw in ["item", "twinmed", "qty", "unit", "price", "total", "description"])
         rowscore = 0
@@ -175,15 +176,9 @@ def pick_items_table(dfs: List[pd.DataFrame]) -> Optional[pd.DataFrame]:
     return max(dfs, key=score)
 
 def parse_items_from_table(df: pd.DataFrame) -> List[Dict[str, Optional[str]]]:
-    """
-    Column-aware parsing:
-    - Detect header row by expected header words.
-    - Map Price -> Unit Price, Qty -> QTY, Total -> Extended Price.
-    - If headers not found, use a legacy heuristic.
-    """
-    if df is None or df.empty: return []
-
-    # Find header row (within first 3 rows)
+    if df is None or df.empty:
+        return []
+    # find header row
     header_idx = None
     for r in range(min(3, len(df))):
         cells = df.iloc[r].astype(str).tolist()
@@ -197,14 +192,14 @@ def parse_items_from_table(df: pd.DataFrame) -> List[Dict[str, Optional[str]]]:
         for i in range(header_idx + 1, len(df)):
             cells = df.iloc[i].astype(str).tolist()
 
-            # Item Number
+            # Item
             item_no = None
             if colmap["item"] is not None and colmap["item"] < len(cells):
-                candidate = cells[colmap["item"]].strip()
-                if re.fullmatch(r'[A-Z0-9\-\/]{4,}', candidate):
-                    item_no = candidate
+                cand = cells[colmap["item"]].strip()
+                if re.fullmatch(r'[A-Z0-9\-\/]{4,}', cand):
+                    item_no = cand
             if not item_no:
-                continue  # skip non-item rows
+                continue
 
             # QTY
             qty = None
@@ -213,17 +208,17 @@ def parse_items_from_table(df: pd.DataFrame) -> List[Dict[str, Optional[str]]]:
                 if re.fullmatch(r'\d{1,4}', qraw):
                     qty = int(qraw)
 
-            # Unit Price (from 'Price' column)
+            # Unit price from 'Price'
             unit_price = None
             if colmap["price"] is not None and colmap["price"] < len(cells):
                 unit_price = norm_money(cells[colmap["price"]])
 
-            # Extended Price (from 'Total' column)
+            # Extended from 'Total'
             ext_price = None
             if colmap["total"] is not None and colmap["total"] < len(cells):
                 ext_price = norm_money(cells[colmap["total"]])
 
-            # Gentle fallback inside the same row
+            # gentle fallback
             if unit_price is None or ext_price is None:
                 monies = [norm_money(c) for c in cells if norm_money(c) is not None]
                 if unit_price is None and len(monies) >= 2: unit_price = monies[-2]
@@ -232,59 +227,63 @@ def parse_items_from_table(df: pd.DataFrame) -> List[Dict[str, Optional[str]]]:
             rows.append({"Item Number": item_no, "QTY": qty, "Unit Price": unit_price, "Extended Price": ext_price})
         return rows
 
-    # --------- Legacy/backup heuristic if no headers found ----------
+    # legacy heuristic
     rows = []
     for i in range(len(df)):
         cells = df.iloc[i].astype(str).tolist()
-        if not cells: continue
-        first = cells[0].strip()
-        if not re.fullmatch(r'[A-Z0-9\-\/]{4,}', first): continue
-
+        if not is_item_row(cells): 
+            continue
+        item_no = cells[0].strip()
         qty = None
         for c in cells:
             if re.fullmatch(r'\d{1,4}', c.strip()):
                 qty = int(c.strip()); break
-
         monies = [norm_money(c) for c in cells if norm_money(c) is not None]
         unit_price = ext_price = None
         if len(monies) >= 2:
             unit_price, ext_price = monies[-2], monies[-1]
         elif len(monies) == 1:
             ext_price = monies[-1]
-
-        rows.append({"Item Number": first, "QTY": qty, "Unit Price": unit_price, "Extended Price": ext_price})
+        rows.append({"Item Number": item_no, "QTY": qty, "Unit Price": unit_price, "Extended Price": ext_price})
     return rows
 
 def regex_items_fallback(text: str) -> List[Dict[str, Optional[str]]]:
     """
-    Parse lines that look like:
+    Parse lines like:
     1008275 ... 14.70 BX 3 44.10
-                ^price ^unit ^qty ^total
+                    ^unit ^qty ^total
     """
     out = []
-    UNIT_TOKENS = r'(EA|BX|CS|PK|BG|BT|DZ|PR|RL|ST|CT)'
+    # NON-CAPTURING unit group to keep indices stable:
+    UNIT_TOKENS = r'(?:EA|BX|CS|PK|BG|BT|DZ|PR|RL|ST|CT)'
     item_line = re.compile(r'^([A-Z0-9][A-Z0-9\-\/]{3,})\b(.*)$')
 
     for ln in text.splitlines():
         ln = ln.strip()
         m0 = item_line.match(ln)
-        if not m0: continue
+        if not m0:
+            continue
 
         item_no, tail = m0.group(1), m0.group(2)
 
-        # Prefer explicit "... <price> <unit> <qty> <total>" at the end of the line
+        # Explicit "... <price> <unit> <qty> <total>" at end of line
         m = re.search(
             rf'(\$?\d{{1,3}}(?:,\d{{3}})*(?:\.\d{{2}})?)\s+{UNIT_TOKENS}\s+(\d{{1,4}})\s+(\$?\d{{1,3}}(?:,\d{{3}})*(?:\.\d{{2}})?)\s*$',
             tail, flags=re.I
         )
         if m:
             unit_price = norm_money(m.group(1))
-            qty        = int(m.group(2))
+            # FIX: qty is group(2), total is group(3) after making UNIT non-capturing
+            try:
+                qty = int(m.group(2))
+            except Exception:
+                qty = None
             ext_price  = norm_money(m.group(3))
         else:
             # Fallback: last two monies + last small int
             monies = re.findall(r'\$?\d{1,3}(?:,\d{3})*(?:\.\d{2})?', tail)
-            if not monies: continue
+            if not monies:
+                continue
             ext_price = norm_money(monies[-1])
             unit_price = norm_money(monies[-2]) if len(monies) >= 2 else None
             ints = re.findall(r'\b\d{1,4}\b', tail)
@@ -323,65 +322,58 @@ def to_standard_rows(header: Dict[str,str], items: List[Dict[str, Optional[str]]
         })
     return rows
 
-def parse_invoice_bytes_to_df(pdf_bytes: bytes, use_account_code: bool) -> pd.DataFrame:
-    text = get_text_from_bytes(pdf_bytes)
-    header = parse_header(text, use_account_code)
+def pdf_to_standard_df(pdf_bytes: bytes, prefer_account_code: bool) -> pd.DataFrame:
+    text = get_text_from_pdf_bytes(pdf_bytes)
+    header = parse_header(text, prefer_account_code)
 
-    # Try Camelot first
-    dfs = camelot_extract_from_bytes(pdf_bytes)
-    items: List[Dict[str, Optional[str]]] = []
+    dfs = camelot_extract_tempfile(pdf_bytes)
+    items = []
     if dfs:
-        tbl = pick_items_table(dfs)
-        items = parse_items_from_table(tbl)
+        table = pick_items_table(dfs)
+        if table is not None:
+            items = parse_items_from_table(table)
     if not items:
         items = regex_items_fallback(text)
 
     rows = to_standard_rows(header, items)
     df = pd.DataFrame(rows, columns=STANDARD_COLUMNS)
 
+    # attach a few header fields for quick verification
+    if not df.empty:
+        df.insert(0, "Header: Customer", header.get("customer_no"))
+        df.insert(1, "Header: Invoice", header.get("invoice_no"))
+        df.insert(2, "Header: Date", header.get("invoice_date"))
     return df
 
-# ---------- UI: FILE UPLOAD ----------
-uploaded = st.file_uploader("Upload a TwinMed PDF invoice", type=["pdf"], accept_multiple_files=False)
+# ---------- UI: Upload & Parse ----------
+uploaded = st.file_uploader(
+    "Upload a TwinMed PDF invoice", type=["pdf"], accept_multiple_files=False
+)
 
 if uploaded:
     try:
         st.info(f"Parsing **{uploaded.name}** …")
         pdf_bytes = uploaded.read()
-        df = parse_invoice_bytes_to_df(pdf_bytes, ACCOUNT_CODE_AS_CUSTOMER_NUMBER)
+        df = pdf_to_standard_df(pdf_bytes, use_account_code)
 
         if df.empty:
-            st.warning("No line items detected.")
+            st.error("No line items detected in the PDF.")
         else:
             st.success(f"Parsed {len(df)} rows.")
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df.head(50), use_container_width=True)
 
             # Download CSV
             csv_bytes = df.to_csv(index=False).encode("utf-8")
             st.download_button(
                 "📥 Download CSV",
                 data=csv_bytes,
-                file_name=f"{os.path.splitext(uploaded.name)[0]}_standard_schema.csv",
-                mime="text/csv"
+                file_name=f"{os.path.splitext(uploaded.name)[0]}_standard.csv",
+                mime="text/csv",
             )
-            # Download Excel
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df.to_excel(writer, index=False)
-            st.download_button(
-                "📥 Download Excel",
-                data=output.getvalue(),
-                file_name=f"{os.path.splitext(uploaded.name)[0]}_standard_schema.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
-            # Optional: show header sanity
-            with st.expander("Show parsed header JSON"):
-                text = get_text_from_bytes(pdf_bytes)
-                header = parse_header(text, ACCOUNT_CODE_AS_CUSTOMER_NUMBER)
-                st.code(json.dumps(header, indent=2), language="json")
 
     except Exception as e:
         st.error(f"Failed to parse PDF: {e}")
+        with st.expander("Show error details"):
+            st.exception(e)
 else:
-    st.info("👆 Upload a PDF to begin.")
+    st.caption("Drop a PDF above to begin.")
