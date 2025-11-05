@@ -89,6 +89,9 @@ def norm_item(x) -> str:
 def norm_ticket(x) -> str:
     return as_str(x).upper()
 
+# Map friendly credit type to your short code if you still want to store both
+CREDIT_TYPE_TO_CODE = {"Credit Memo": "RTNCM", "Internal": "RTNINT"}
+
 # =========================
 # UI
 # =========================
@@ -115,10 +118,10 @@ if uploaded_file:
 
     df_filtered = df[expected_cols].copy()
 
-    # Sales Rep
+    # Ensure Sales Rep column exists
     df_filtered["Sales Rep"] = df.get("Sales Rep", pd.Series([None]*len(df)))
 
-    # --- Clean numeric fields (fixed indentation bug) ---
+    # --- Clean numeric fields ---
     for field in ['Unit Price', 'Corrected Unit Price', 'Credit Request Total']:
         df_filtered[field] = (
             df_filtered[field].astype(str).str.replace(r'[$,]', '', regex=True)
@@ -141,11 +144,11 @@ if uploaded_file:
         'QTY': 0, 'Unit Price': 0, 'Corrected Unit Price': 0, 'Credit Request Total': 0
     }, inplace=True)
 
-    # --- Normalize core IDs in the dataframe now (so manual edits are cleaned) ---
+    # --- Normalize core IDs now (for downstream dedupe) ---
     df_filtered['Invoice Number'] = df_filtered['Invoice Number'].map(norm_invoice)
     df_filtered['Item Number']    = df_filtered['Item Number'].map(norm_item)
 
-    # --- Fetch existing Firebase entries for dedupe (use normalized forms) ---
+    # --- Fetch existing Firebase entries for dedupe (normalized) ---
     existing_pairs = set()
     try:
         existing_data = ref.get() or {}
@@ -156,87 +159,137 @@ if uploaded_file:
     except Exception as e:
         st.error(f"❌ Error reading from Firebase: {e}")
 
-    # Step 2: Form Input
-    st.header("Step 2: Add Ticket Info")
-    with st.form("ticket_entry"):
-        ticket_number = st.text_input("🎫 Ticket Number")
-        ticket_date   = st.date_input("📅 Ticket Date", value=datetime.today())
-        status        = st.text_area("📜 Status / Reason")
-        credit_type_input = st.selectbox("🗂️ Type", options=["RTNCM", "RTNINT"])
+    # =========================
+    # Step 2: Ticket info (common fields)
+    # =========================
+    st.header("Step 2: Ticket Info")
+    with st.form("ticket_meta"):
+        colA, colB = st.columns(2)
+        with colA:
+            ticket_number = st.text_input("🎫 Ticket Number")
+        with colB:
+            ticket_date   = st.date_input("📅 Ticket Date", value=datetime.today())
 
-        sales_rep_options = sorted([
-            'HOUSE','SA/AR','nan','AR/KE','BPARKER','RFRIEDMAN','AROSENFELD','DR/TU','JK/AR','AR/MG',
-            'CHRISWYLER','JGOULDING','AL/NL','MALCARAZ','TJUNIK','ALANDAU','NYS','EB/MC/MF/SM',
-            'EB/MC/MF/SM/SP','ELIB','MF/SG','TRENNERT','SA/MG','WNISCHT','AR/BG','RMAIRS','BWERCZBERGER',
-            'AL/AR/BG','EB','JEARL','TWHITZEL','JSWEENEY','JMCSHANNOCK','DDFILIPPO','CTHOMAS','NELLMAN',
-            'BMONCZYK','SADAMS','DW/EB/MC/MF/SM','DWEBMCMFSMSP','DW/EB/MF/MC/SP/','JC/JT','RF/AR','RDORAN',
-            'SMARCIANO','JCROSGROVE','MC/MF','MC/SM','BOBGOLD','ELI/BOB','MFINE','CFAULKNER','NLANDAU','MF',
-            'ALLMED','CW/SM','AOBEZIL','EB/MC/MF','JTIPTON','AR/JS','DW/MF','BRANDALL','KM/RM','MDESIMONE',
-            'MEYER','MC','CHI/NL','BBINDEL','MWEENIG','NMERRITT','DW','SDECKERT','MC/MF/SM',
-            'ELIB/MC/MF/SIMI','DW/MF/SM','EB/SG','EB/MC/MF/SG/SM','NBITTERMAN','SM/MC/EB/MF/AL','MLANDAU',
-            'EB/MF/MC/SP/SM','JMILLER','ELIB/MC','JGOLESTANI','MF/SM','JSOLOMON','AL/NL/TJ','MVZ','SIMI',
-            'CWILLIAMS','DW/EB/MC/MF/SIM','TPETERS','BP/NL','DW/SIMI/MF','JDUCKWORTH','EB/MC','DWEINBERGER',
-            'AL/MF','SIMI/MF','DD/AS','MAMCGOWEN','AROEBUCK','JM/BB','JGRANT','ALEBMCMFSMSP','AROTH',
-            'SIMI/MC/MF','JSHALLMAN','DROPA','ASPEAR','JS/DW','JE/JT','AL/AR','SIMI/MC','ELIB/SIMI',
-            'JM/MA','RA/KE','MC/MF/SG','JC/JE','EB/SM','MDELGADO','BW/CW','ELI/SHAWEL','BROOSEVELT',
-            'DYONA','MVANZELST','ROB','ELI/BOB/MF','MC/MF/SG/SM','AL/MC','SIMI/MC/ELIB','TJ/NB','MC/SG',
-            'MF/SP/RF','AL/JG','MEDSPARK','JM/AS','CRAMIREZ','CF/AR','SM','TJ/NL','AO/MA','MCHASE',
-            'KSCHWIETERMAN','ELI BERKOVICH','CW/TJ','MW/TJ','KEMORY','RA','BG','PECK','EB/NB/C/F/M/P',
-            'CROBINSON','MF/NL','SG','SD/SM','DW/EB/MC/MF/SM/SP','BB/MDS','BFR','TJ/SA','NB/JE',
-            'BOB/MF/SIMI/MC','DW/MC/MF/SM','CLANDAU/CWYLER','ELIB/MC/MF/RG/S'
-        ])
-        sales_rep_input = st.selectbox("👤 Sales Rep", options=sales_rep_options)
+        status = st.text_area("📜 Status / Reason")
 
-        submitted = st.form_submit_button("Submit Record")
+        submitted_meta = st.form_submit_button("Continue to Row Review")
 
-        if submitted:
-            ticket_norm = norm_ticket(ticket_number)
-            if not ticket_norm:
-                st.error("Ticket Number is required.")
-                st.stop()
+    if not submitted_meta:
+        st.stop()
 
-            count = 0
-            for _, row in df_filtered.iterrows():
-                inv  = norm_invoice(row['Invoice Number'])
-                item = None if row['Issue Type'] == 'Tax' else norm_item(row['Item Number'])
+    # =========================
+    # Step 3: Per-row Review & Edits (Sales Rep + Credit Type dropdowns)
+    # =========================
+    st.header("Step 3: Review & Edit Rows")
 
-                # dedupe on normalized pair
-                if row['Issue Type'] != 'Tax' and (inv, item) in existing_pairs:
-                    st.warning(f"⚠️ Skipped duplicate: Invoice {inv}, Item {item}")
-                    continue
+    sales_rep_options = sorted([
+        'HOUSE','SA/AR','nan','AR/KE','BPARKER','RFRIEDMAN','AROSENFELD','DR/TU','JK/AR','AR/MG',
+        'CHRISWYLER','JGOULDING','AL/NL','MALCARAZ','TJUNIK','ALANDAU','NYS','EB/MC/MF/SM',
+        'EB/MC/MF/SM/SP','ELIB','MF/SG','TRENNERT','SA/MG','WNISCHT','AR/BG','RMAIRS','BWERCZBERGER',
+        'AL/AR/BG','EB','JEARL','TWHITZEL','JSWEENEY','JMCSHANNOCK','DDFILIPPO','CTHOMAS','NELLMAN',
+        'BMONCZYK','SADAMS','DW/EB/MC/MF/SM','DWEBMCMFSMSP','DW/EB/MF/MC/SP/','JC/JT','RF/AR','RDORAN',
+        'SMARCIANO','JCROSGROVE','MC/MF','MC/SM','BOBGOLD','ELI/BOB','MFINE','CFAULKNER','NLANDAU','MF',
+        'ALLMED','CW/SM','AOBEZIL','EB/MC/MF','JTIPTON','AR/JS','DW/MF','BRANDALL','KM/RM','MDESIMONE',
+        'MEYER','MC','CHI/NL','BBINDEL','MWEENIG','NMERRITT','DW','SDECKERT','MC/MF/SM',
+        'ELIB/MC/MF/SIMI','DW/MF/SM','EB/SG','EB/MC/MF/SG/SM','NBITTERMAN','SM/MC/EB/MF/AL','MLANDAU',
+        'EB/MF/MC/SP/SM','JMILLER','ELIB/MC','JGOLESTANI','MF/SM','JSOLOMON','AL/NL/TJ','MVZ','SIMI',
+        'CWILLIAMS','DW/EB/MC/MF/SIM','TPETERS','BP/NL','DW/SIMI/MF','JDUCKWORTH','EB/MC','DWEINBERGER',
+        'AL/MF','SIMI/MF','DD/AS','MAMCGOWEN','AROEBUCK','JM/BB','JGRANT','ALEBMCMFSMSP','AROTH',
+        'SIMI/MC/MF','JSHALLMAN','DROPA','ASPEAR','JS/DW','JE/JT','AL/AR','SIMI/MC','ELIB/SIMI',
+        'JM/MA','RA/KE','MC/MF/SG','JC/JE','EB/SM','MDELGADO','BW/CW','ELI/SHAWEL','BROOSEVELT',
+        'DYONA','MVANZELST','ROB','ELI/BOB/MF','MC/MF/SG/SM','AL/MC','SIMI/MC/ELIB','TJ/NB','MC/SG',
+        'MF/SP/RF','AL/JG','MEDSPARK','JM/AS','CRAMIREZ','CF/AR','SM','TJ/NL','AO/MA','MCHASE',
+        'KSCHWIETERMAN','ELI BERKOVICH','CW/TJ','MW/TJ','KEMORY','RA','BG','PECK','EB/NB/C/F/M/P',
+        'CROBINSON','MF/NL','SG','SD/SM','DW/EB/MC/MF/SM/SP','BB/MDS','BFR','TJ/SA','NB/JE',
+        'BOB/MF/SIMI/MC','DW/MC/MF/SM','CLANDAU/CWYLER','ELIB/MC/MF/RG/S'
+    ])
+    credit_type_options = ["Credit Memo", "Internal"]
 
-                record = row.to_dict()
-                # overwrite with normalized, clean values to avoid .0 in DB
-                record['Invoice Number'] = inv
-                if item is None:
-                    record['Item Number'] = None
-                else:
-                    record['Item Number'] = item
+    # Ensure required columns exist for editing
+    if 'Credit Type' not in df_filtered.columns:
+        df_filtered['Credit Type'] = ""
+    if 'Sales Rep' not in df_filtered.columns:
+        df_filtered['Sales Rep'] = ""
 
-                record["Ticket Number"] = ticket_norm
-                record["Date"] = datetime.combine(ticket_date, datetime.min.time()).strftime("%Y-%m-%d")
-                record["Status"] = as_str(status)
-                record["Sales Rep"] = record.get("Sales Rep") or sales_rep_input
-                record["Type"] = as_str(credit_type_input)
-                record["Record ID"] = f"{ticket_norm}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{count}"
+    # Build an editor-friendly frame with only the columns you want to tweak + context
+    review_cols = [
+        'Invoice Number', 'Item Number', 'Issue Type', 'QTY',
+        'Unit Price', 'Corrected Unit Price', 'Credit Request Total',
+        'Requested By', 'Reason for Credit',
+        'Credit Type', 'Sales Rep'  # editable via dropdowns
+    ]
+    review_df = df_filtered[review_cols].copy()
 
-                # clean NaNs
-                record = {k: (None if pd.isna(v) else v) for k, v in record.items()}
+    st.caption("Tip: You can sort/filter in the table; edit **Credit Type** and **Sales Rep** per row.")
+    edited_df = st.data_editor(
+        review_df,
+        use_container_width=True,
+        num_rows="fixed",
+        column_config={
+            "Credit Type": st.column_config.SelectboxColumn("Credit Type", options=credit_type_options, required=False),
+            "Sales Rep": st.column_config.SelectboxColumn("Sales Rep", options=[""] + sales_rep_options, required=False),
+        }
+    )
 
-                try:
-                    # push with IDs as strings (prevents floats/.0 in Firebase)
-                    if record.get("Item Number") is not None:
-                        record["Item Number"] = as_str(record["Item Number"])
-                    record["Invoice Number"] = as_str(record["Invoice Number"])
-                    record["Ticket Number"]  = as_str(record["Ticket Number"])
+    # =========================
+    # Step 4: Submit to Firebase
+    # =========================
+    if st.button("🚀 Submit Edited Rows to Firebase"):
+        ticket_norm = norm_ticket(ticket_number)
+        if not ticket_norm:
+            st.error("Ticket Number is required.")
+            st.stop()
 
-                    ref.push(record)
-                    count += 1
-                except Exception as e:
-                    st.error(f"🔥 Submission failed for Invoice {inv}, Item {item}: {e}")
+        count = 0
+        for _, row in edited_df.iterrows():
+            inv  = norm_invoice(row['Invoice Number'])
+            # Tax rows don't require Item Number for dedupe
+            item = None if row['Issue Type'] == 'Tax' else norm_item(row['Item Number'])
 
-            if count:
-                st.success(f"✅ {count} record(s) submitted to Firebase!")
+            # dedupe on normalized pair
+            if row['Issue Type'] != 'Tax' and (inv, item) in existing_pairs:
+                st.warning(f"⚠️ Skipped duplicate: Invoice {inv}, Item {item}")
+                continue
+
+            record = row.to_dict()
+
+            # Normalize IDs (avoid .0 in Firebase)
+            record['Invoice Number'] = inv
+            record['Item Number'] = None if item is None else item
+
+            # Attach ticket meta + mappings
+            record["Ticket Number"] = ticket_norm
+            record["Date"] = datetime.combine(ticket_date, datetime.min.time()).strftime("%Y-%m-%d")
+            record["Status"] = as_str(status)
+
+            # Ensure dropdown values exist
+            record["Sales Rep"] = as_str(record.get("Sales Rep"))
+            friendly_ct = as_str(record.get("Credit Type"))
+            record["Credit Type"] = friendly_ct if friendly_ct in credit_type_options else friendly_ct
+
+            # optional short code 'Type' kept for legacy
+            record["Type"] = CREDIT_TYPE_TO_CODE.get(friendly_ct, as_str(CREDIT_TYPE_TO_CODE.get(friendly_ct, "")))
+
+            # Clean NaNs -> None
+            record = {k: (None if pd.isna(v) else v) for k, v in record.items()}
+
+            # Push with string IDs
+            if record.get("Item Number") is not None:
+                record["Item Number"] = as_str(record["Item Number"])
+            record["Invoice Number"] = as_str(record["Invoice Number"])
+            record["Ticket Number"]  = as_str(record["Ticket Number"])
+
+            # Add Record ID
+            record["Record ID"] = f"{ticket_norm}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{count}"
+
+            try:
+                ref.push(record)
+                count += 1
+            except Exception as e:
+                st.error(f"🔥 Submission failed for Invoice {inv}, Item {item}: {e}")
+
+        if count:
+            st.success(f"✅ {count} record(s) submitted to Firebase!")
 
 # Logout
 if st.sidebar.button("Logout"):
