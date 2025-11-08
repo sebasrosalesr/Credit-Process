@@ -85,16 +85,20 @@ def classify_state(full_status, last_msg):
 
 def summarize_row(row):
     now = datetime.now(timezone.utc).replace(tzinfo=None)
+
     status = str(row.get(STATUS_COL, "") or "")
     req_dt = parse_any_dt(row.get(DATE_COL))
     last_dt, last_msg, _ = extract_status_last(status)
     if pd.isna(last_dt):
         last_dt = req_dt
+
     days_open = (now - req_dt).days if pd.notna(req_dt) else None
-    dsu = (now - last_dt).days if pd.notna(last_dt) else None
-    state = classify_state(status, last_msg)
+    dsu       = (now - last_dt).days if pd.notna(last_dt) else None
+    state     = classify_state(status, last_msg)
+
     rtn = row.get("RTN_CR_No", None)
     has_cr = bool(str(rtn).strip()) if rtn is not None else False
+
     return {
         "Record ID": row.get("Record ID"),
         "Ticket Number": row.get("Ticket Number"),
@@ -102,46 +106,67 @@ def summarize_row(row):
         "Sales Rep": row.get("Sales Rep"),
         "Issue Type": row.get("Issue Type"),
         "status_state": state,
+        "status_last_update_dt": last_dt,   # << added for messaging
+        "status_last_msg": last_msg,
         "days_since_update": dsu,
+        "request_dt": req_dt,
         "RTN_CR_No": rtn,
         "has_cr_number": has_cr,
-        "status_last_msg": last_msg,
-        "request_dt": req_dt
     }
 
 def make_followup_or_status_message(s):
     fmt = lambda x: x.strftime("%Y-%m-%d %H:%M") if pd.notna(x) else "—"
+    dsu_txt = "—" if s["days_since_update"] is None else str(s["days_since_update"])
+
+    # Unknown but CR present → no action
     if s["status_state"] == "Unknown" and s["has_cr_number"]:
         subj = f"[No action] Ticket {s['Ticket Number']} has CR on file"
-        msg = (
+        body = (
             f"Ticket {s['Ticket Number']} shows state *Unknown* but has CR ({s['RTN_CR_No']}).\n"
-            f"- Issue: {s['Issue Type']}\n- Opened: {fmt(s['request_dt'])}\n"
-            f"- Last update: {fmt(s['request_dt'])} (days since {s['days_since_update']})\n"
-            "No follow-up required. Normalize upstream status text."
+            f"- Issue: {s['Issue Type']}\n"
+            f"- Opened: {fmt(s['request_dt'])}\n"
+            f"- Last update: {fmt(s['status_last_update_dt'])} (days since: {dsu_txt})\n"
+            "No follow-up required. (Consider normalizing upstream status text.)"
         )
-        return subj, msg
+        return subj, body
+
+    # Closed or CR present → resolved
     if s["has_cr_number"] or s["status_state"] in ["Approved/Submitted","Resolved/Closing","Denied"]:
         subj = f"[Resolved] Ticket {s['Ticket Number']} is closed or processed"
-        msg = (
+        body = (
             f"Ticket {s['Ticket Number']} is *{s['status_state']}* with CR {s['RTN_CR_No'] or 'N/A'}.\n"
-            f"Last update {fmt(s['request_dt'])}. No further action required."
+            f"- Last update: {fmt(s['status_last_update_dt'])} (days since: {dsu_txt})\n"
+            "No further action required."
         )
-        return subj, msg
+        return subj, body
+
+    # Still pending → follow-up
     reasons = []
     if not s["has_cr_number"]:
         reasons.append("missing CR number")
-    if s["days_since_update"] and s["days_since_update"] >= FOLLOWUP_UPDATE_DAYS:
-        reasons.append(f"{s['days_since_update']} days w/out update")
+    if s["days_since_update"] is not None and s["days_since_update"] >= FOLLOWUP_UPDATE_DAYS:
+        reasons.append(f"{s['days_since_update']} days without update")
     reason_txt = " and ".join(reasons) if reasons else "follow-up"
+
     subj = f"[Follow-up] Ticket {s['Ticket Number']} – {reason_txt}"
-    msg = (
+    body = (
         f"Following up on ticket {s['Ticket Number']}.\n"
         f"- Issue: {s['Issue Type']}\n"
-        f"- Last update: {fmt(s['request_dt'])} (days since {s['days_since_update']})\n"
-        f"- CR: {s['RTN_CR_No'] or 'None'}\n- State: {s['status_state']}\n"
-        "Please update status or provide ETA. Thanks!"
+        f"- Opened: {fmt(s['request_dt'])}\n"
+        f"- Last update: {fmt(s['status_last_update_dt'])} (days since: {dsu_txt})\n"
+        f"- CR: {s['RTN_CR_No'] or 'None'}\n"
+        f"- State: {s['status_state']}\n\n"
+        "Please provide a status update and CR number (if issued), or an ETA for resolution."
     )
-    return subj, msg
+    return subj, body
+
+# --- SAFE wrapper to avoid "Columns must be same length as key"
+def _safe_msg(s):
+    try:
+        sub, body = make_followup_or_status_message(s)
+        return str(sub), str(body)
+    except Exception as e:
+        return "[Message error]", f"Failed to build message for {s.get('Ticket Number','?')}: {e}"
 
 # =========================
 # Date filter (last 3 months)
@@ -154,9 +179,11 @@ df_month = df[(df["Date"] >= range_start) & (df["Date"] <= today)].copy()
 # Apply logic
 # =========================
 summary = df_month.apply(summarize_row, axis=1, result_type="expand")
-summary[["message_subject","message_body"]] = summary.apply(
-    lambda s: pd.Series(make_followup_or_status_message(s)), axis=1
-)
+
+# robust 2-column assignment
+pairs = summary.apply(_safe_msg, axis=1).tolist()
+summary[["message_subject","message_body"]] = pd.DataFrame(pairs, index=summary.index)
+
 summary["needs_followup"] = (
     ((~summary["has_cr_number"]) | (summary["days_since_update"].fillna(-1) >= FOLLOWUP_UPDATE_DAYS))
     & ~((summary["status_state"] == "Unknown") & summary["has_cr_number"])
@@ -168,14 +195,25 @@ summary["Follow-up Status"] = summary["needs_followup"].map(
 # =========================
 # Display summary
 # =========================
-st.metric("🔴 Follow-ups", int(summary["needs_followup"].sum()))
-st.metric("🟢 No action", int((~summary["needs_followup"]).sum()))
+c1, c2 = st.columns(2)
+with c1:
+    st.metric("🔴 Follow-ups", int(summary["needs_followup"].sum()))
+with c2:
+    st.metric("🟢 No action", int((~summary["needs_followup"]).sum()))
 
-cols = ["Ticket Number","Issue Type","status_state","RTN_CR_No","days_since_update","Follow-up Status","message_subject"]
-st.dataframe(
-    summary.sort_values(["needs_followup","days_since_update"], ascending=[False, False])[cols],
-    use_container_width=True
-)
+cols = ["Ticket Number","status_state","RTN_CR_No",
+        "days_since_update","Follow-up Status","message_subject"]
+
+df_view = summary.sort_values(
+    by=["needs_followup","days_since_update"],
+    ascending=[False, False],
+    na_position="last"
+)[cols]
+
+st.dataframe(df_view, use_container_width=True)
 
 with st.expander("📬 Full Message Details"):
-    st.dataframe(summary[["Ticket Number","Follow-up Status","message_subject","message_body"]], use_container_width=True)
+    st.dataframe(
+        summary[["Ticket Number","Follow-up Status","message_subject","message_body"]],
+        use_container_width=True
+    )
