@@ -306,10 +306,11 @@ ticket_view = ticket_view.sort_values(
 # Build readable option labels
 def _label(row):
     status = "FOLLOW-UP" if row["needs_followup_any"] else "NO ACTION"
-    cr = "MISSING" if row["any_no_cr"] else "OK"
-    return f"{row['Ticket Number']} | {status} | CR={cr} | lines={row['lines_in_range']}"
-
-ticket_view["__label__"] = ticket_view.apply(_label, axis=1)
+    if row["any_no_cr"]:
+        cr_label = f"MISSING ({row['lines_missing_cr']} of {row['lines_in_range']})"
+    else:
+        cr_label = "OK"
+    return f"{row['Ticket Number']} | {status} | CR={cr_label}"
 
 # ---------- UI: Full ticket detail only ----------
 st.subheader("🔎 Full ticket detail")
