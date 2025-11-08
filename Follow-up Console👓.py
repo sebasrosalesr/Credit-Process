@@ -176,13 +176,18 @@ range_start = today - pd.DateOffset(months=3)
 df_month = df[(df["Date"] >= range_start) & (df["Date"] <= today)].copy()
 
 # =========================
-# Apply logic
+# Apply logic (robust)
 # =========================
 summary = df_month.apply(summarize_row, axis=1, result_type="expand")
 
-# robust 2-column assignment
-pairs = summary.apply(_safe_msg, axis=1).tolist()
-summary[["message_subject","message_body"]] = pd.DataFrame(pairs, index=summary.index)
+if summary.empty:
+    st.info("No tickets in the last 3 months for this view.")
+    st.stop()
+
+# Build messages safely and assign as two Series (avoids shape/key errors)
+pairs = [ _safe_msg(row) for _, row in summary.iterrows() ]
+summary["message_subject"] = [p[0] for p in pairs]
+summary["message_body"]   = [p[1] for p in pairs]
 
 summary["needs_followup"] = (
     ((~summary["has_cr_number"]) | (summary["days_since_update"].fillna(-1) >= FOLLOWUP_UPDATE_DAYS))
