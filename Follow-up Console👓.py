@@ -273,46 +273,56 @@ st.caption(f"🔴 Follow-ups to send: {int(summary['needs_followup'].sum())} / {
 #  - needs_followup lines first
 #  - then lines missing CR number
 #  - then the largest days_since_update
-def _pick_representative(g: pd.DataFrame) -> pd.Series:
-    g = g.copy()
-    g["_needs"] = g["needs_followup"].fillna(False).astype(int)
-    g["_no_cr"] = (~g["has_cr_number"]).fillna(False).astype(int)
-    g["_dsu"]   = g["days_since_update"].fillna(-1).astype(int)
-    rep = g.sort_values(["_needs", "_no_cr", "_dsu"], ascending=[False, False, False]).iloc[0]
+# ---------- Build per-ticket rollup (one row per Ticket Number) ----------
+if summary.empty:
+    ticket_view = pd.DataFrame(columns=[
+        "Ticket Number","needs_followup_any","any_no_cr","lines_in_range",
+        "lines_missing_cr","max_days_since_update","message_subject","message_body","RTN_CR_No","__label__"
+    ])
+else:
+    def _reduce_group(df_t: pd.DataFrame) -> pd.Series:
+        needs_any  = bool(df_t["needs_followup"].fillna(False).any())
+        any_no_cr  = bool((~df_t["has_cr_number"].fillna(False)).any())
+        lines_in   = int(len(df_t))
+        lines_miss = int((~df_t["has_cr_number"].fillna(False)).sum())
+        dsu_max    = pd.to_numeric(df_t["days_since_update"], errors="coerce").max()
 
-    # attach ticket-level aggregates
-    rep = rep.copy()
-    rep["lines_in_range"]     = int(len(g))
-    rep["lines_missing_cr"]   = int((~g["has_cr_number"]).sum())
-    rep["needs_followup_any"] = bool(g["needs_followup"].any())
-    rep["any_no_cr"]          = bool((~g["has_cr_number"]).any())
-    rep["max_days_since_update"] = (
-        int(g["days_since_update"].max()) if g["days_since_update"].notna().any() else None
+        # Pick a representative line to show:
+        # Prefer the one with the biggest days_since_update; fallback to first row.
+        dsu_series = pd.to_numeric(df_t["days_since_update"], errors="coerce").fillna(-1)
+        rep_idx = dsu_series.idxmax() if not dsu_series.empty else df_t.index[0]
+        rep = df_t.loc[rep_idx]
+
+        return pd.Series({
+            "needs_followup_any": needs_any,
+            "any_no_cr": any_no_cr,
+            "lines_in_range": lines_in,
+            "lines_missing_cr": lines_miss,
+            "max_days_since_update": dsu_max,
+            "message_subject": rep.get("message_subject", ""),
+            "message_body": rep.get("message_body", ""),
+            "RTN_CR_No": rep.get("RTN_CR_No", None)
+        })
+
+    ticket_view = (
+        summary
+        .groupby("Ticket Number", dropna=False)
+        .apply(_reduce_group)
+        .reset_index()
     )
-    return rep
 
-ticket_view = (
-    summary.groupby("Ticket Number", dropna=False)
-           .apply(_pick_representative)
-           .reset_index(drop=True)
-)
+    # Build readable option labels
+    def _label_row(r):
+        status = "FOLLOW-UP" if r["needs_followup_any"] else "NO ACTION"
+        if r["any_no_cr"]:
+            cr_label = f"MISSING ({int(r['lines_missing_cr'])} of {int(r['lines_in_range'])})"
+        else:
+            cr_label = "OK"
+        return f"{r['Ticket Number']} | {status} | CR={cr_label} | lines={int(r['lines_in_range'])}"
 
-# Order the picker: follow-ups first, then any-no-CR, then max days since update desc
-ticket_view = ticket_view.sort_values(
-    ["needs_followup_any", "any_no_cr", "max_days_since_update"],
-    ascending=[False, False, False]
-)
+    ticket_view["__label__"] = ticket_view.apply(_label_row, axis=1)
 
-# Build readable option labels
-def _label(row):
-    status = "FOLLOW-UP" if row["needs_followup_any"] else "NO ACTION"
-    if row["any_no_cr"]:
-        cr_label = f"MISSING ({row['lines_missing_cr']} of {row['lines_in_range']})"
-    else:
-        cr_label = "OK"
-    return f"{row['Ticket Number']} | {status} | CR={cr_label}"
-
-# ---------- UI: Full ticket detail only ----------
+# ---------- UI: Full ticket detail ONLY ----------
 st.subheader("🔎 Full ticket detail")
 
 if ticket_view.empty:
@@ -334,14 +344,15 @@ else:
 
     # Helpful ticket-level context
     st.markdown(
-        f"- **Lines in range:** {sel_row['lines_in_range']}\n"
-        f"- **Lines missing CR:** {sel_row['lines_missing_cr']}\n"
+        f"- **Lines in range:** {int(sel_row['lines_in_range'])}\n"
+        f"- **Lines missing CR:** {int(sel_row['lines_missing_cr'])}\n"
         f"- **Any line needs follow-up:** {'Yes' if sel_row['needs_followup_any'] else 'No'}\n"
         f"- **Any line missing CR:** {'Yes' if sel_row['any_no_cr'] else 'No'}\n"
-        f"- **Worst days since update:** {sel_row['max_days_since_update'] if pd.notna(sel_row['max_days_since_update']) else '—'}"
+        f"- **Worst days since update:** "
+        f"{int(sel_row['max_days_since_update']) if pd.notna(sel_row['max_days_since_update']) else '—'}"
     )
 
-    # (Optional) show all raw lines for this ticket under the hood
+    # All raw lines for this ticket (optional drilldown)
     with st.expander("All lines for this ticket (raw rows)", expanded=False):
         all_lines = summary.loc[summary["Ticket Number"] == sel_row["Ticket Number"]].copy()
         cols_show = [
@@ -350,18 +361,21 @@ else:
             "message_subject","message_body","needs_followup"
         ]
         cols_show = [c for c in cols_show if c in all_lines.columns]
-        st.dataframe(all_lines[cols_show].sort_values("days_since_update", ascending=False),
-                     use_container_width=True, hide_index=True)
+        st.dataframe(
+            all_lines[cols_show].sort_values("days_since_update", ascending=False),
+            use_container_width=True,
+            hide_index=True
+        )
 
-    # Export: per-ticket rollup CSV (one row per ticket)
-    out_path = "followups_ticket_rollup_{}_to_{}.csv".format(
-        range_start.strftime("%Y%m%d"), range_end.strftime("%Y%m%d")
-    )
-    csv_bytes = ticket_view.drop(columns=["__label__","_needs","_no_cr","_dsu"], errors="ignore") \
-                           .to_csv(index=False, encoding="utf-8-sig")
-    st.download_button(
-        "⬇️ Download per-ticket rollup CSV",
-        data=csv_bytes,
-        file_name=out_path,
-        mime="text/csv"
-    )
+# Export: per-ticket rollup CSV (one row per ticket)
+out_path = "followups_ticket_rollup_{}_to_{}.csv".format(
+    range_start.strftime("%Y%m%d"), range_end.strftime("%Y%m%d")
+)
+csv_bytes = ticket_view.drop(columns=["__label__"], errors="ignore") \
+                       .to_csv(index=False, encoding="utf-8-sig")
+st.download_button(
+    "⬇️ Download per-ticket rollup CSV",
+    data=csv_bytes,
+    file_name=out_path,
+    mime="text/csv"
+)
