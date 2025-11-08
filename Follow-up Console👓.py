@@ -251,15 +251,28 @@ summary["needs_followup"] = (
 st.caption(f"🔴 Follow-ups to send: {int(summary['needs_followup'].sum())} / {len(summary)}")
 
 # === Display exactly the same type of table you expect ===
-# Show the full summary head like in your notebook preview
+# Show only the main columns like your screenshot
+cols_show = [
+    "days_since_update", "RTN_CR_No", "has_cr_number",
+    "message_subject", "message_body", "needs_followup"
+]
+
+# Keep only existing columns (in case of slight name differences)
+cols_show = [c for c in cols_show if c in summary.columns]
+
 with st.expander("Preview (first 20 rows of full summary)", expanded=True):
-    st.dataframe(summary.head(20), use_container_width=True)
+    st.dataframe(
+        summary[cols_show].head(20),
+        use_container_width=True,
+        hide_index=True
+    )
 
 # Also show the two message columns (full set) for convenience
 st.subheader("📬 Messages")
 st.dataframe(
     summary[["message_subject", "message_body"]],
-    use_container_width=True
+    use_container_width=True,
+    hide_index=True
 )
 
 # Export — same columns as your code (entire summary)
