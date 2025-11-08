@@ -256,9 +256,15 @@ summary[["message_subject", "message_body"]] = summary.apply(
 )
 
 # Follow-up flag (same rule)
-summary["needs_followup"] = (
-    ((~summary["has_cr_number"]) | (summary["days_since_update"].fillna(-1) >= FOLLOWUP_UPDATE_DAYS))
-    & ~((summary["status_state"] == "Unknown") & summary["has_cr_number"])
+summary["needs_followup"] = summary.apply(
+    lambda s: (
+        (not s["has_cr_number"]) and
+        (
+            s["status_state"] in ["In Process", "Unknown"]
+            or (s["days_since_update"] and s["days_since_update"] >= FOLLOWUP_UPDATE_DAYS)
+        )
+    ),
+    axis=1
 )
 
 # Console-style count
