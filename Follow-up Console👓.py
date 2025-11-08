@@ -179,7 +179,7 @@ def make_followup_or_status_message(s):
             f"- Opened: {fmt_dt(s['request_dt'])}\n"
             f"- Last update: {fmt_dt(s['status_last_update_dt'])} "
             f"(days since: {s['days_since_update']})\n\n"
-            "No follow-up required. (Consider normalizing upstream status text.)"
+            "No follow-up required."
         )
         return subject, body
 
