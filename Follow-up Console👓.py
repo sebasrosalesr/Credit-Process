@@ -5,6 +5,10 @@ from datetime import datetime, timezone
 from dateutil.parser import parse as dtparse
 import streamlit as st
 
+# 🔧 NEW: Firebase Admin imports
+import firebase_admin
+from firebase_admin import credentials, db
+
 # =========================
 # Streamlit setup
 # =========================
@@ -28,6 +32,51 @@ def init_firebase():
     return True
 
 init_firebase()
+
+# 🔧 NEW: robust date parse used in loader
+def safe_parse_force_string(x):
+    try:
+        return pd.to_datetime(dtparse(str(x), fuzzy=True))
+    except Exception:
+        return pd.NaT
+
+# 🔧 NEW: Load df from Firebase if not already present
+@st.cache_data(show_spinner=True, ttl=120)
+def load_data():
+    cols = [
+        "Record ID","Ticket Number","Requested By","Sales Rep",
+        "Issue Type","Date","Status","RTN_CR_No"
+    ]
+    ref = db.reference("credit_requests")
+    raw = ref.get() or {}
+    df_ = pd.DataFrame([{c: v.get(c, None) for c in cols} for v in raw.values()])
+    df_["Date"] = df_["Date"].apply(safe_parse_force_string)
+    df_ = df_.dropna(subset=["Date"]).copy()
+    # make datetimes naive to avoid tz math issues downstream
+    if pd.api.types.is_datetime64_any_dtype(df_["Date"]):
+        try:
+            df_["Date"] = df_["Date"].dt.tz_localize(None)
+        except Exception:
+            pass
+    return df_
+
+if "df" not in st.session_state:
+    st.session_state["df"] = load_data()
+
+# =========================
+# Expect required columns
+# =========================
+required_cols = {
+    "Date","Status","Record ID","Ticket Number","Requested By",
+    "Sales Rep","Issue Type","RTN_CR_No"
+}
+missing = [c for c in required_cols if c not in st.session_state.get("df", pd.DataFrame()).columns]
+
+if not missing:
+    df = st.session_state["df"].copy()
+else:
+    st.info("⚠️ DataFrame is missing columns: " + ", ".join(missing))
+    st.stop()
 
 required_cols = {
     "Date","Status","Record ID","Ticket Number","Requested By",
