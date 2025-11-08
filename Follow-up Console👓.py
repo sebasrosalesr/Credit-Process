@@ -50,6 +50,22 @@ def load_data():
 
 df = load_data()
 
+# --- Date controls (defaults to last 3 months) ---
+today = pd.Timestamp.today().normalize()
+default_start = today - pd.DateOffset(months=3)
+
+st.sidebar.header("Date range")
+start_date = st.sidebar.date_input("Start", default_start.date())
+end_date   = st.sidebar.date_input("End", today.date())
+
+start_ts = pd.Timestamp(start_date)
+end_ts   = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)  # inclusive
+
+# Show dataset coverage for context
+min_dt = pd.to_datetime(df["Date"]).min()
+max_dt = pd.to_datetime(df["Date"]).max()
+st.sidebar.caption(f"Data coverage: {min_dt.date()} → {max_dt.date()}")
+
 # =========================
 # Logic helpers
 # =========================
@@ -85,7 +101,7 @@ def classify_state(full_status, last_msg):
 
 def summarize_row(row):
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-
+ 
     status = str(row.get(STATUS_COL, "") or "")
     req_dt = parse_any_dt(row.get(DATE_COL))
     last_dt, last_msg, _ = extract_status_last(status)
@@ -173,8 +189,19 @@ def _safe_msg(s):
 # =========================
 today = pd.Timestamp.today().normalize()
 range_start = today - pd.DateOffset(months=3)
-df_month = df[(df["Date"] >= range_start) & (df["Date"] <= today)].copy()
+df_month = df[(df["Date"] >= start_ts) & (df["Date"] <= end_ts)].copy()
 
+if df_month.empty:
+    # fallback: last 12 months
+    fallback_start = today - pd.DateOffset(months=12)
+    df_month = df[(df["Date"] >= fallback_start) & (df["Date"] <= today)].copy()
+    if df_month.empty:
+        st.info("No tickets in the selected range (even after expanding to the last 12 months). "
+                "Try widening the date window in the sidebar.")
+        st.stop()
+    else:
+        st.warning("No tickets in the selected range. Showing last 12 months instead.")
+        
 # =========================
 # Apply logic (robust)
 # =========================
