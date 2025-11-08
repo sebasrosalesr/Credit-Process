@@ -232,13 +232,17 @@ with right:
     st.metric("🟢 No action", int((~summary["needs_followup"]).sum()))
 
 cols_show = [
-    "Ticket Number","Issue Type","status_state","RTN_CR_No","days_since_update",
-    "Follow-up Status","message_subject"
+    "Ticket Number","Issue Type","status_state","RTN_CR_No",
+    "days_since_update","Follow-up Status","message_subject"
 ]
-st.dataframe(
-    summary[cols_show].sort_values(["needs_followup","days_since_update"], ascending=[False, False]),
-    use_container_width=True
-)
+
+df_view = summary.sort_values(
+    by=["needs_followup","days_since_update"],
+    ascending=[False, False],
+    na_position="last"
+)[cols_show]
+
+st.dataframe(df_view, use_container_width=True)
 
 # Details expander
 with st.expander("Show full messages"):
