@@ -1,18 +1,16 @@
-# streamlit_followup_app.py
+# streamlit_followups.py
 import re
 import pandas as pd
-import streamlit as st
 from datetime import datetime, timezone
 from dateutil.parser import parse as dtparse
-from firebase_admin import credentials, db
-import firebase_admin
+import streamlit as st
 
-# -----------------------------
+# =========================
 # Streamlit setup
-# -----------------------------
-st.set_page_config(page_title="Credit Request Follow-ups", page_icon="🧾", layout="wide")
+# =========================
+st.set_page_config(page_title="Monthly Follow-up Checker", page_icon="🧾", layout="wide")
 st.title("🧾 Monthly Follow-up Dashboard")
-st.caption("Identifies pending credit tickets with no CR or long inactivity (>20 days).")
+st.caption("Identifies pending credit tickets with no CR or long inactivity (≥20 days).")
 
 # =========================
 # Firebase init
@@ -31,76 +29,37 @@ def init_firebase():
 
 init_firebase()
 
-# =========================
-# Load data (with robust Date parsing)
-# =========================
-from dateutil.parser import parse as dtparse
+required_cols = {
+    "Date","Status","Record ID","Ticket Number","Requested By",
+    "Sales Rep","Issue Type","RTN_CR_No"
+}
+missing = [c for c in required_cols if c not in st.session_state.get("df", pd.DataFrame()).columns] \
+          if "df" in st.session_state else list(required_cols)  # if df not in session, all are "missing"
 
-def safe_parse_force_string(x):
-    try:
-        return pd.to_datetime(dtparse(str(x), fuzzy=True))
-    except Exception:
-        return pd.NaT
+if "df" in st.session_state and not missing:
+    df = st.session_state["df"].copy()
+else:
+    st.info("⚠️ Please load your DataFrame `df` into `st.session_state['df']` before running.\n"
+            "It must include: " + ", ".join(sorted(required_cols)))
+    st.stop()
 
-@st.cache_data(show_spinner=True, ttl=120)
-def load_data():
-    cols = [
-        "Record ID","Ticket Number","Requested By","Sales Rep",
-        "Issue Type","Date","Status","RTN_CR_No"
-    ]
-    ref = db.reference("credit_requests")
-    raw = ref.get() or {}
-    df = pd.DataFrame([{c: v.get(c, None) for c in cols} for v in raw.values()])
+# ===== Monthly follow-up checker (runs on your `df`) =====
+FOLLOWUP_UPDATE_DAYS = 20   # trigger if no update in >= N days
+DATE_COL   = "Date"
+STATUS_COL = "Status"
 
-    # ✅ robust parse (handles mixed date formats)
-    df["Date"] = df["Date"].apply(safe_parse_force_string)
-
-    # ✅ drop invalids
-    df = df.dropna(subset=["Date"]).copy()
-
-    # ✅ normalize to naive datetimes (remove timezones)
-    if pd.api.types.is_datetime64_any_dtype(df["Date"]):
-        df["Date"] = df["Date"].dt.tz_localize(None)
-
-    # ✅ Quick preview (shows in Streamlit logs, not UI)
-    print(f"✅ Loaded {len(df)} records with valid parsed dates from Firebase.")
-    print(df[["Date", "Ticket Number", "Requested By"]].head())
-
-    return df
-
-# Load data once
-df = load_data()
-
-# --- Date controls (defaults to last 3 months) ---
-today = pd.Timestamp.today().normalize()
-default_start = today - pd.DateOffset(months=3)
-
-st.sidebar.header("Date range")
-start_date = st.sidebar.date_input("Start", default_start.date())
-end_date   = st.sidebar.date_input("End", today.date())
-
-start_ts = pd.Timestamp(start_date)
-end_ts   = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)  # inclusive
-
-# Show dataset coverage for context
-min_dt = pd.to_datetime(df["Date"]).min()
-max_dt = pd.to_datetime(df["Date"]).max()
-st.sidebar.caption(f"Data coverage: {min_dt.date()} → {max_dt.date()}")
-
-# =========================
-# Logic helpers
-# =========================
-FOLLOWUP_UPDATE_DAYS = 20
-DATE_COL, STATUS_COL = "Date", "Status"
-BRACKET_DT = re.compile(r"\[(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})\]")
-
+# --- Helpers ---
 def parse_any_dt(s):
+    if s is None or (isinstance(s, float) and pd.isna(s)): return pd.NaT
     try:
         return pd.to_datetime(dtparse(str(s), fuzzy=True))
     except Exception:
         return pd.NaT
 
-def extract_status_last(status_str):
+BRACKET_DT = re.compile(r"\[(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})\]")
+
+def extract_status_last(status_str: str):
+    """Find the last [YYYY-MM-DD HH:MM:SS] in a status blob and the trailing message."""
     if not isinstance(status_str, str) or not status_str.strip():
         return pd.NaT, "", 0
     matches = list(BRACKET_DT.finditer(status_str))
@@ -110,27 +69,29 @@ def extract_status_last(status_str):
         last_msg = status_str[last.end():].strip()
         last_msg = re.sub(r"^\s*(Update:|In\s*Process:|WIP:?)+\s*", "", last_msg, flags=re.I)
         return last_dt, last_msg, len(matches)
-    return parse_any_dt(status_str), status_str.strip(), 0
+    # Fallback: try to parse the whole string as a date
+    any_dt = parse_any_dt(status_str)
+    return any_dt, (status_str or "").strip(), 0
 
-def classify_state(full_status, last_msg):
+def classify_state(full_status: str, last_msg: str):
     text = f"{full_status or ''} {last_msg or ''}".lower()
-    if any(k in text for k in ["denied","no credit warranted","rejected"]): return "Denied"
-    if any(k in text for k in ["approved","submitted","credit issued","posted"]): return "Approved/Submitted"
-    if any(k in text for k in ["resolved","closing","closed"]): return "Resolved/Closing"
-    if any(k in text for k in ["wip","in process","pending","delay","delayed"]): return "In Process"
+    if any(k in text for k in ["denied", "no credit warranted", "rejected"]): return "Denied"
+    if any(k in text for k in ["approved", "submitted", "credit issued", "posted"]): return "Approved/Submitted"
+    if any(k in text for k in ["resolved", "closing", "closed"]): return "Resolved/Closing"
+    if any(k in text for k in ["wip", "in process", "pending", "delay", "delayed"]): return "In Process"
     return "Unknown"
 
 def summarize_row(row):
     now = datetime.now(timezone.utc).replace(tzinfo=None)
- 
+
     status = str(row.get(STATUS_COL, "") or "")
     req_dt = parse_any_dt(row.get(DATE_COL))
     last_dt, last_msg, _ = extract_status_last(status)
-    if pd.isna(last_dt):
+    if pd.isna(last_dt):  # if no timestamped updates, fall back to request date
         last_dt = req_dt
 
-    days_open = (now - req_dt).days if pd.notna(req_dt) else None
-    dsu       = (now - last_dt).days if pd.notna(last_dt) else None
+    days_open = int((now - req_dt).days) if pd.notna(req_dt) else None
+    dsu       = int((now - last_dt).days) if pd.notna(last_dt) else None  # days since update
     state     = classify_state(status, last_msg)
 
     rtn = row.get("RTN_CR_No", None)
@@ -142,42 +103,51 @@ def summarize_row(row):
         "Requested By": row.get("Requested By"),
         "Sales Rep": row.get("Sales Rep"),
         "Issue Type": row.get("Issue Type"),
-        "status_state": state,
-        "status_last_update_dt": last_dt,   # << added for messaging
-        "status_last_msg": last_msg,
-        "days_since_update": dsu,
         "request_dt": req_dt,
+        "status_last_update_dt": last_dt,
+        "status_last_msg": last_msg,
+        "status_state": state,
+        "days_open": days_open,
+        "days_since_update": dsu,
         "RTN_CR_No": rtn,
         "has_cr_number": has_cr,
     }
 
 def make_followup_or_status_message(s):
-    fmt = lambda x: x.strftime("%Y-%m-%d %H:%M") if pd.notna(x) else "—"
-    dsu_txt = "—" if s["days_since_update"] is None else str(s["days_since_update"])
+    """
+    Generate either a follow-up message (if pending) or a resolution/no-action message (if closed/CR present).
+    """
+    def fmt_dt(x):
+        return x.strftime("%Y-%m-%d %H:%M") if pd.notna(x) else "—"
 
-    # Unknown but CR present → no action
+    # ✅ Exception: status is Unknown but there IS a CR number → no follow-up required
     if s["status_state"] == "Unknown" and s["has_cr_number"]:
-        subj = f"[No action] Ticket {s['Ticket Number']} has CR on file"
+        subject = f"[No action] Ticket {s['Ticket Number']} has CR on file"
         body = (
-            f"Ticket {s['Ticket Number']} shows state *Unknown* but has CR ({s['RTN_CR_No']}).\n"
-            f"- Issue: {s['Issue Type']}\n"
-            f"- Opened: {fmt(s['request_dt'])}\n"
-            f"- Last update: {fmt(s['status_last_update_dt'])} (days since: {dsu_txt})\n"
+            f"Ticket {s['Ticket Number']} (Record {s['Record ID']}) shows state *Unknown* but has a CR number "
+            f"({s['RTN_CR_No']}).\n\n"
+            f"- Issue Type: {s['Issue Type']}\n"
+            f"- Opened: {fmt_dt(s['request_dt'])}\n"
+            f"- Last update: {fmt_dt(s['status_last_update_dt'])} "
+            f"(days since: {s['days_since_update']})\n\n"
             "No follow-up required. (Consider normalizing upstream status text.)"
         )
-        return subj, body
+        return subject, body
 
-    # Closed or CR present → resolved
-    if s["has_cr_number"] or s["status_state"] in ["Approved/Submitted","Resolved/Closing","Denied"]:
-        subj = f"[Resolved] Ticket {s['Ticket Number']} is closed or processed"
+    # ✅ Closed or CR present — short resolution message
+    if s["has_cr_number"] or s["status_state"] in ["Approved/Submitted", "Resolved/Closing", "Denied"]:
+        subject = f"[Resolved] Ticket {s['Ticket Number']} is already closed or processed"
         body = (
-            f"Ticket {s['Ticket Number']} is *{s['status_state']}* with CR {s['RTN_CR_No'] or 'N/A'}.\n"
-            f"- Last update: {fmt(s['status_last_update_dt'])} (days since: {dsu_txt})\n"
-            "No further action required."
+            f"Ticket {s['Ticket Number']} (Record {s['Record ID']}) is marked as *{s['status_state']}* "
+            f"and has a CR number ({s['RTN_CR_No'] or 'N/A'}).\n\n"
+            f"- Issue Type: {s['Issue Type']}\n"
+            f"- Last update: {fmt_dt(s['status_last_update_dt'])}\n"
+            f"- Closed days ago: {s['days_since_update']}\n\n"
+            "No further follow-up needed unless an exception arises."
         )
-        return subj, body
+        return subject, body
 
-    # Still pending → follow-up
+    # 🚨 Still pending or no CR — normal follow-up message
     reasons = []
     if not s["has_cr_number"]:
         reasons.append("missing CR number")
@@ -185,88 +155,73 @@ def make_followup_or_status_message(s):
         reasons.append(f"{s['days_since_update']} days without update")
     reason_txt = " and ".join(reasons) if reasons else "follow-up"
 
-    subj = f"[Follow-up] Ticket {s['Ticket Number']} – {reason_txt}"
+    subject = f"[Follow-up] Ticket {s['Ticket Number']} – {reason_txt}"
     body = (
-        f"Following up on ticket {s['Ticket Number']}.\n"
-        f"- Issue: {s['Issue Type']}\n"
-        f"- Opened: {fmt(s['request_dt'])}\n"
-        f"- Last update: {fmt(s['status_last_update_dt'])} (days since: {dsu_txt})\n"
-        f"- CR: {s['RTN_CR_No'] or 'None'}\n"
+        f"Hi Magician Darren,\n\n"
+        f"Following up on ticket {s['Ticket Number']}).\n"
+        f"- Issue Type: {s['Issue Type']}\n"
+        f"- Opened: {fmt_dt(s['request_dt'])} (days open: {s['days_open']})\n"
+        f"- Last update: {fmt_dt(s['status_last_update_dt'])} (days since: {s['days_since_update']})\n"
+        f"- CR Number: {s['RTN_CR_No'] or 'None'}\n"
         f"- State: {s['status_state']}\n\n"
-        "Please provide a status update and CR number (if issued), or an ETA for resolution."
+        "Request: please provide a status update and CR number (if issued), "
+        "or an ETA for resolution.\n\nThanks!"
     )
-    return subj, body
+    return subject, body
 
-# --- SAFE wrapper to avoid "Columns must be same length as key"
-def _safe_msg(s):
-    try:
-        sub, body = make_followup_or_status_message(s)
-        return str(sub), str(body)
-    except Exception as e:
-        return "[Message error]", f"Failed to build message for {s.get('Ticket Number','?')}: {e}"
+# ---- Pick a monthly range (edit these two lines) ----
+# Keeping your exact hard-coded window; you can change here if needed.
+range_start = "2025-08-01"
+range_end   = "2025-09-30"
 
-# =========================
-# Date filter (last 3 months)
-# =========================
-today = pd.Timestamp.today().normalize()
-range_start = today - pd.DateOffset(months=3)
-df_month = df[(df["Date"] >= start_ts) & (df["Date"] <= end_ts)].copy()
+# Ensure Date is datetime (you already parsed, but this is safe)
+df_range = df.copy()
+df_range[DATE_COL] = pd.to_datetime(df_range[DATE_COL], errors="coerce")
 
-if df_month.empty:
-    # fallback: last 12 months
-    fallback_start = today - pd.DateOffset(months=12)
-    df_month = df[(df["Date"] >= fallback_start) & (df["Date"] <= today)].copy()
-    if df_month.empty:
-        st.info("No tickets in the selected range (even after expanding to the last 12 months). "
-                "Try widening the date window in the sidebar.")
-        st.stop()
-    else:
-        st.warning("No tickets in the selected range. Showing last 12 months instead.")
-        
-# =========================
-# Apply logic (robust)
-# =========================
+mask = (df_range[DATE_COL] >= range_start) & (df_range[DATE_COL] <= range_end)
+df_month = df_range.loc[mask].copy()
+
+st.success(f"✅ Loaded {len(df_month)} tickets in range {range_start} → {range_end}")
+
+# Summarize and flag (exactly as in your code)
 summary = df_month.apply(summarize_row, axis=1, result_type="expand")
 
-if summary.empty:
-    st.info("No tickets in the last 3 months for this view.")
-    st.stop()
+# 🧩 Add message generation (follow-up OR resolved) — same logic
+summary[["message_subject", "message_body"]] = summary.apply(
+    lambda s: pd.Series(make_followup_or_status_message(s)),
+    axis=1
+)
 
-# Build messages safely and assign as two Series (avoids shape/key errors)
-pairs = [ _safe_msg(row) for _, row in summary.iterrows() ]
-summary["message_subject"] = [p[0] for p in pairs]
-summary["message_body"]   = [p[1] for p in pairs]
-
+# 🔎 Optional: flag which ones still need follow-up — same condition
 summary["needs_followup"] = (
     ((~summary["has_cr_number"]) | (summary["days_since_update"].fillna(-1) >= FOLLOWUP_UPDATE_DAYS))
     & ~((summary["status_state"] == "Unknown") & summary["has_cr_number"])
 )
-summary["Follow-up Status"] = summary["needs_followup"].map(
-    {True: "🔴 Needs follow-up", False: "🟢 No follow-up required"}
+
+# Quick view (console-like info line replicated in app)
+st.caption(f"🔴 Follow-ups to send: {int(summary['needs_followup'].sum())} / {len(summary)}")
+
+# === Display exactly the same type of table you expect ===
+# Show the full summary head like in your notebook preview
+with st.expander("Preview (first 20 rows of full summary)", expanded=True):
+    st.dataframe(summary.head(20), use_container_width=True)
+
+# Also show the two message columns (full set) for convenience
+st.subheader("📬 Messages")
+st.dataframe(
+    summary[["message_subject", "message_body"]],
+    use_container_width=True
 )
 
-# =========================
-# Display summary
-# =========================
-c1, c2 = st.columns(2)
-with c1:
-    st.metric("🔴 Follow-ups", int(summary["needs_followup"].sum()))
-with c2:
-    st.metric("🟢 No action", int((~summary["needs_followup"]).sum()))
-
-cols = ["Ticket Number","status_state","RTN_CR_No",
-        "days_since_update","Follow-up Status","message_subject"]
-
-df_view = summary.sort_values(
-    by=["needs_followup","days_since_update"],
-    ascending=[False, False],
-    na_position="last"
-)[cols]
-
-st.dataframe(df_view, use_container_width=True)
-
-with st.expander("📬 Full Message Details"):
-    st.dataframe(
-        summary[["Ticket Number","Follow-up Status","message_subject","message_body"]],
-        use_container_width=True
-    )
+# Export — same columns as your code (entire summary)
+out_path = "followups_{}_to_{}.csv".format(
+    pd.to_datetime(range_start).strftime("%Y%m%d"),
+    pd.to_datetime(range_end).strftime("%Y%m%d"),
+)
+csv_bytes = summary.to_csv(index=False, encoding="utf-8-sig")
+st.download_button(
+    "⬇️ Download full summary CSV",
+    data=csv_bytes,
+    file_name=out_path,
+    mime="text/csv"
+)
