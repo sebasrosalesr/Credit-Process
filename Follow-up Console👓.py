@@ -218,22 +218,29 @@ def make_followup_or_status_message(s):
     )
     return subject, body
 
-# ---- Pick a monthly range (edit these two lines) ----
-# Keeping your exact hard-coded window; you can change here if needed.
-range_start = "2025-08-01"
-range_end   = "2025-09-30"
+# ---- Date range UI (defaults = last 3 months) ----
+today = pd.Timestamp.today().normalize()
+default_start = (today - pd.DateOffset(months=3)).to_pydatetime().date()
+default_end   = today.to_pydatetime().date()
 
-# Ensure Date is datetime (you already parsed, but this is safe)
+c1, c2 = st.columns(2)
+with c1:
+    ui_start = st.date_input("Start date", value=default_start)
+with c2:
+    ui_end   = st.date_input("End date", value=default_end)
+
+# Ensure pandas Timestamps for filtering
+range_start = pd.to_datetime(ui_start)
+range_end   = pd.to_datetime(ui_end) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)  # inclusive end
+
+# Ensure Date is datetime (you already parse earlier)
 df_range = df.copy()
 df_range[DATE_COL] = pd.to_datetime(df_range[DATE_COL], errors="coerce")
 
 mask = (df_range[DATE_COL] >= range_start) & (df_range[DATE_COL] <= range_end)
 df_month = df_range.loc[mask].copy()
 
-st.success(f"✅ Loaded {len(df_month)} tickets in range {range_start} → {range_end}")
-
-# Summarize and flag (exactly as in your code)
-summary = df_month.apply(summarize_row, axis=1, result_type="expand")
+st.success(f"✅ Loaded {len(df_month)} tickets in range {range_start.date()} → {range_end.date()}")
 
 # 🧩 Add message generation (follow-up OR resolved) — same logic
 summary[["message_subject", "message_body"]] = summary.apply(
@@ -251,13 +258,11 @@ summary["needs_followup"] = (
 st.caption(f"🔴 Follow-ups to send: {int(summary['needs_followup'].sum())} / {len(summary)}")
 
 # === Display exactly the same type of table you expect ===
-# Show only the main columns like your screenshot
+# Main table like your screenshot (only these columns)
 cols_show = [
     "days_since_update", "RTN_CR_No", "has_cr_number",
     "message_subject", "message_body", "needs_followup"
 ]
-
-# Keep only existing columns (in case of slight name differences)
 cols_show = [c for c in cols_show if c in summary.columns]
 
 with st.expander("Preview (first 20 rows of full summary)", expanded=True):
@@ -267,7 +272,7 @@ with st.expander("Preview (first 20 rows of full summary)", expanded=True):
         hide_index=True
     )
 
-# Also show the two message columns (full set) for convenience
+# 📬 Messages-only view (all rows)
 st.subheader("📬 Messages")
 st.dataframe(
     summary[["message_subject", "message_body"]],
@@ -275,11 +280,35 @@ st.dataframe(
     hide_index=True
 )
 
-# Export — same columns as your code (entire summary)
-out_path = "followups_{}_to_{}.csv".format(
-    pd.to_datetime(range_start).strftime("%Y%m%d"),
-    pd.to_datetime(range_end).strftime("%Y%m%d"),
+# 🔎 Full, untruncated detail viewer
+st.subheader("🔎 Full ticket detail")
+# Build a small label to pick a record
+picker_df = summary.copy()
+picker_df["__label__"] = picker_df.apply(
+    lambda r: f"{r['Ticket Number']} | {'FOLLOW-UP' if r['needs_followup'] else 'NO ACTION'} | CR={r['RTN_CR_No'] or 'None'}",
+    axis=1
 )
+choice = st.selectbox(
+    "Pick a ticket to view full lines",
+    options=picker_df["__label__"].tolist()
+)
+
+if choice:
+    sel_row = picker_df.loc[picker_df["__label__"] == choice].iloc[0]
+
+    st.markdown("**Subject**")
+    st.code(str(sel_row["message_subject"]), language="text")
+
+    st.markdown("**Body**")
+    # Code block preserves full line breaks; no truncation
+    st.code(str(sel_row["message_body"]), language="text")
+
+    st.markdown("**All fields (this row)**")
+    # Show the entire row (dictionary) below
+    st.json({k: (None if pd.isna(v) else v) for k, v in sel_row.drop(labels="__label__").to_dict().items()})
+
+# Export — same columns as your code (entire summary)
+out_path = "followups_{}_to_{}.csv".format(range_start.strftime("%Y%m%d"), range_end.strftime("%Y%m%d"))
 csv_bytes = summary.to_csv(index=False, encoding="utf-8-sig")
 st.download_button(
     "⬇️ Download full summary CSV",
