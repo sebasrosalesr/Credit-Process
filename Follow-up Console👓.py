@@ -32,22 +32,43 @@ def init_firebase():
 init_firebase()
 
 # =========================
-# Load data
+# Load data (with robust Date parsing)
 # =========================
+from dateutil.parser import parse as dtparse
+
+def safe_parse_force_string(x):
+    try:
+        return pd.to_datetime(dtparse(str(x), fuzzy=True))
+    except Exception:
+        return pd.NaT
+
 @st.cache_data(show_spinner=True, ttl=120)
 def load_data():
     cols = [
-        "Record ID","Ticket Number","Requested By","Sales Rep","Issue Type","Date",
-        "Status","RTN_CR_No"
+        "Record ID","Ticket Number","Requested By","Sales Rep",
+        "Issue Type","Date","Status","RTN_CR_No"
     ]
     ref = db.reference("credit_requests")
     raw = ref.get() or {}
-    data = [{c: v.get(c, None) for c in cols} for v in raw.values()]
-    df = pd.DataFrame(data)
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-    df = df.dropna(subset=["Date"])
+    df = pd.DataFrame([{c: v.get(c, None) for c in cols} for v in raw.values()])
+
+    # ✅ robust parse (handles mixed date formats)
+    df["Date"] = df["Date"].apply(safe_parse_force_string)
+
+    # ✅ drop invalids
+    df = df.dropna(subset=["Date"]).copy()
+
+    # ✅ normalize to naive datetimes (remove timezones)
+    if pd.api.types.is_datetime64_any_dtype(df["Date"]):
+        df["Date"] = df["Date"].dt.tz_localize(None)
+
+    # ✅ Quick preview (shows in Streamlit logs, not UI)
+    print(f"✅ Loaded {len(df)} records with valid parsed dates from Firebase.")
+    print(df[["Date", "Ticket Number", "Requested By"]].head())
+
     return df
 
+# Load data once
 df = load_data()
 
 # --- Date controls (defaults to last 3 months) ---
