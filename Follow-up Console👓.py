@@ -229,36 +229,42 @@ with c1:
 with c2:
     ui_end   = st.date_input("End date", value=default_end)
 
-# Ensure pandas Timestamps for filtering
-range_start = pd.to_datetime(ui_start)
-range_end   = pd.to_datetime(ui_end) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)  # inclusive end
+# Guard: ensure start <= end
+if ui_start > ui_end:
+    st.error("Start date must be on or before End date.")
+    st.stop()
 
-# Ensure Date is datetime (you already parse earlier)
+# Convert to pandas Timestamps (inclusive end)
+range_start = pd.to_datetime(ui_start)
+range_end   = pd.to_datetime(ui_end) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+
+# Ensure Date is datetime and filter
 df_range = df.copy()
 df_range[DATE_COL] = pd.to_datetime(df_range[DATE_COL], errors="coerce")
-
 mask = (df_range[DATE_COL] >= range_start) & (df_range[DATE_COL] <= range_end)
 df_month = df_range.loc[mask].copy()
 
 st.success(f"✅ Loaded {len(df_month)} tickets in range {range_start.date()} → {range_end.date()}")
 
-# 🧩 Add message generation (follow-up OR resolved) — same logic
+# ⬇️ CREATE summary (this was missing)
+summary = df_month.apply(summarize_row, axis=1, result_type="expand")
+
+# Generate messages
 summary[["message_subject", "message_body"]] = summary.apply(
     lambda s: pd.Series(make_followup_or_status_message(s)),
     axis=1
 )
 
-# 🔎 Optional: flag which ones still need follow-up — same condition
+# Follow-up flag (same rule)
 summary["needs_followup"] = (
     ((~summary["has_cr_number"]) | (summary["days_since_update"].fillna(-1) >= FOLLOWUP_UPDATE_DAYS))
     & ~((summary["status_state"] == "Unknown") & summary["has_cr_number"])
 )
 
-# Quick view (console-like info line replicated in app)
+# Console-style count
 st.caption(f"🔴 Follow-ups to send: {int(summary['needs_followup'].sum())} / {len(summary)}")
 
 # === Display exactly the same type of table you expect ===
-# Main table like your screenshot (only these columns)
 cols_show = [
     "days_since_update", "RTN_CR_No", "has_cr_number",
     "message_subject", "message_body", "needs_followup"
@@ -266,53 +272,26 @@ cols_show = [
 cols_show = [c for c in cols_show if c in summary.columns]
 
 with st.expander("Preview (first 20 rows of full summary)", expanded=True):
-    st.dataframe(
-        summary[cols_show].head(20),
-        use_container_width=True,
-        hide_index=True
-    )
+    st.dataframe(summary[cols_show].head(20), use_container_width=True, hide_index=True)
 
-# 📬 Messages-only view (all rows)
 st.subheader("📬 Messages")
-st.dataframe(
-    summary[["message_subject", "message_body"]],
-    use_container_width=True,
-    hide_index=True
-)
+st.dataframe(summary[["message_subject", "message_body"]], use_container_width=True, hide_index=True)
 
-# 🔎 Full, untruncated detail viewer
 st.subheader("🔎 Full ticket detail")
-# Build a small label to pick a record
 picker_df = summary.copy()
 picker_df["__label__"] = picker_df.apply(
     lambda r: f"{r['Ticket Number']} | {'FOLLOW-UP' if r['needs_followup'] else 'NO ACTION'} | CR={r['RTN_CR_No'] or 'None'}",
     axis=1
 )
-choice = st.selectbox(
-    "Pick a ticket to view full lines",
-    options=picker_df["__label__"].tolist()
-)
-
+choice = st.selectbox("Pick a ticket to view full lines", options=picker_df["__label__"].tolist())
 if choice:
     sel_row = picker_df.loc[picker_df["__label__"] == choice].iloc[0]
-
-    st.markdown("**Subject**")
-    st.code(str(sel_row["message_subject"]), language="text")
-
-    st.markdown("**Body**")
-    # Code block preserves full line breaks; no truncation
-    st.code(str(sel_row["message_body"]), language="text")
-
+    st.markdown("**Subject**"); st.code(str(sel_row["message_subject"]), language="text")
+    st.markdown("**Body**");    st.code(str(sel_row["message_body"]), language="text")
     st.markdown("**All fields (this row)**")
-    # Show the entire row (dictionary) below
     st.json({k: (None if pd.isna(v) else v) for k, v in sel_row.drop(labels="__label__").to_dict().items()})
 
-# Export — same columns as your code (entire summary)
+# Export
 out_path = "followups_{}_to_{}.csv".format(range_start.strftime("%Y%m%d"), range_end.strftime("%Y%m%d"))
 csv_bytes = summary.to_csv(index=False, encoding="utf-8-sig")
-st.download_button(
-    "⬇️ Download full summary CSV",
-    data=csv_bytes,
-    file_name=out_path,
-    mime="text/csv"
-)
+st.download_button("⬇️ Download full summary CSV", data=csv_bytes, file_name=out_path, mime="text/csv")
