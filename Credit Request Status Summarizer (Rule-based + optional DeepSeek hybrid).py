@@ -1,4 +1,4 @@
-# app.py — Credit Request Status Summarizer (minimal columns)
+# app.py — Firebase + Hybrid Status Summarizer (minimal columns)
 
 import time, traceback, re, requests
 import streamlit as st
@@ -15,21 +15,20 @@ from datetime import datetime, timezone
 st.set_page_config(page_title="Credit Status Summarizer", layout="wide")
 st.write("🚦 App boot…")
 
-use_hybrid = st.sidebar.toggle("Use hybrid (DeepSeek polish)", value=False)
-n_sample   = st.sidebar.slider("Sample size (preview)", 5, 50, 20)
-randomize  = st.sidebar.button("🔀 Shuffle sample")
+N_SAMPLE = st.sidebar.slider("Sample size (preview)", 5, 50, 15)
+RANDOMIZE = st.sidebar.button("🔀 Shuffle sample")
+USE_LLM = st.sidebar.toggle("Use hybrid LLM polish", value=False)
 
 def _t(): return time.perf_counter()
-
 def _safe_parse_dt(x):
     try: return dtparse(str(x), fuzzy=True)
     except: return pd.NaT
 
 # =========================
-# Secrets & Firebase init
+# Firebase init from secrets
 # =========================
 if "firebase" not in st.secrets:
-    st.error("❌ Missing [firebase] in secrets. Add your service account JSON as [firebase] in the app’s Secrets.")
+    st.error("❌ Missing [firebase] in secrets.")
     st.stop()
 
 t0 = _t()
@@ -49,7 +48,7 @@ except Exception:
     st.stop()
 
 # =========================
-# Data fetch (Admin SDK with REST fallback)
+# Fetch last 2 months (Admin SDK with REST fallback + timeout)
 # =========================
 COLUMNS = [
     "Corrected Unit Price","Credit Request Total","Credit Type","Customer Number","Date",
@@ -88,43 +87,46 @@ def fetch_last_2_months():
 try:
     df, src, dur_fetch, dur_parse = fetch_last_2_months()
     st.write(f"📥 Fetch via **{src}**: {dur_fetch:.0f} ms | 🧮 Parse+filter: {dur_parse:.0f} ms | Rows: {len(df):,}")
-    st.dataframe(df.head(10), use_container_width=True)
+    st.dataframe(df.head(8), use_container_width=True)
 except Exception:
     st.error("Load failed:")
     st.code(traceback.format_exc())
     st.stop()
 
 # =========================
-# AI summary (rules + optional hybrid polish)
+# HYBRID STATUS SUMMARIZER (your logic, wired here)
 # =========================
 
-# (Safe stub) If you later wire a real DeepSeek chat(), return a single-sentence rewrite.
+# --- lightweight chat stub (wire your DeepSeek call here if desired) ---
 def chat(messages, max_new_tokens=24, temperature=0.0):
-    # Safe default: return empty so we fall back to rules (no crashes if toggle is on)
+    if not USE_LLM:
+        return ""   # fallback to rules
+    # If you wire an LLM, return a single short sentence string here.
+    # For safety, we'll return empty if not wired:
     return ""
 
-ISO_RX   = re.compile(r"\b(\d{4})[-/](\d{1,2})[-/](\d{1,2})\b")
-MONTH_RX = re.compile(r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?\,?\s+\d{2,4}\b", re.I)
-CR_RX    = re.compile(r"\bCR[#:\-\s]*([A-Z0-9\-]{5,})\b", re.I)
-
-def _norm_dt(s: str):
-    try: return dtparse(s, fuzzy=True).date().isoformat()
-    except Exception: return None
-
-def extract_dates_any(text: str):
+# --- Extractors (as provided) ---
+def extract_dates_any(text):
+    ISO_RX   = re.compile(r"\b(\d{4})[-/](\d{1,2})[-/](\d{1,2})\b")
+    MONTH_RX = re.compile(r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?\,?\s+\d{2,4}\b", re.I)
+    def _norm(s):
+        try: return dtparse(s, fuzzy=True).date().isoformat()
+        except: return None
     if not isinstance(text, str): text = str(text or "")
-    cands = [_norm_dt(m.group(0)) for m in ISO_RX.finditer(text)] + [_norm_dt(m.group(0)) for m in MONTH_RX.finditer(text)]
+    cands = [_norm(m.group(0)) for m in ISO_RX.finditer(text)] + [_norm(m.group(0)) for m in MONTH_RX.finditer(text)]
     cands = [c for c in cands if c]
     latest = max(cands) if cands else None
+
     target = None
     for kw in ("around","on","by","expected","due"):
         p = text.lower().find(kw)
         if p != -1:
             m = ISO_RX.search(text[p:]) or MONTH_RX.search(text[p:])
             if m:
-                target = _norm_dt(m.group(0))
-                break
+                target = _norm(m.group(0)); break
     return latest, target
+
+CR_RX = re.compile(r"\bCR[#:\-\s]*([A-Z0-9\-]{5,})\b", re.I)
 
 def summarize_status_rule(row):
     s_text = str(row.get("Status") or "").strip()
@@ -136,13 +138,11 @@ def summarize_status_rule(row):
         cr_val = m.group(1)
     has_cr = bool(cr_val)
 
-    # late if we have a target date in the past and no CR yet
     is_late = False
     if target and not has_cr:
         try:
             is_late = datetime.fromisoformat(target).date() < datetime.now(timezone.utc).date()
-        except Exception:
-            pass
+        except: pass
 
     txt = s_text.lower()
     if has_cr: lead = "Resolved"
@@ -159,61 +159,78 @@ def summarize_status_rule(row):
         elif target: msg += f"; target={target}."
         elif latest: msg += f"; last_update={latest}."
         else: msg += "."
-
-    meta = dict(has_cr=has_cr, latest=latest, target=target, s_text=s_text)
-    return msg.strip(), meta
+    return msg.strip(), dict(has_cr=has_cr, latest=latest, target=target, lead=lead, s_text=s_text)
 
 def needs_llm(meta: dict) -> bool:
     s = meta["s_text"]
     longish = len(s) > 120
     multi   = s.count(".") + s.count(";") + s.count("]") >= 2
     low_sig = (not meta["has_cr"]) and (meta["target"] is None) and (meta["latest"] is None)
-    return low_sig and (longish or multi)
+    return USE_LLM and (low_sig and (longish or multi))
 
-def summarize_status_hybrid(row, use_llm=False):
+def summarize_status_hybrid(row):
     rule_msg, meta = summarize_status_rule(row)
-    if not (use_llm and needs_llm(meta)):
-        return rule_msg, False
+    if not needs_llm(meta):
+        return rule_msg  # fast path
 
-    sys = ("You are a Credit report analyst. Rewrite as ONE short, factual sentence (<=18 words). "
-           "Allowed verbs: Pending, Submitted, Posted, Denied, Resolved. No preface, no reasoning.")
-    usr = (f"Ticket: {row.get('Ticket Number','')}\n"
-           f"Invoice: {row.get('Invoice Number','')}\n"
-           f"Raw status: {meta['s_text']}\n"
-           "Return only the single sentence.")
-    out = chat([{"role":"system","content":sys},
-                {"role":"user","content":usr}],
-               max_new_tokens=24, temperature=0.0)
-    out = (out or "").strip()
-    if not out:
-        return rule_msg, False  # fallback safely if no LLM wired
-    final = out.splitlines()[-1].strip()
-    if not final.endswith((".", "!", "?")):
-        final += "."
-    return final, True
+    context = {
+        "Ticket Number": row.get("Ticket Number", ""),
+        "Invoice Number": row.get("Invoice Number", ""),
+        "Status": meta["s_text"]
+    }
+    sys = (
+        "You are a Credit report analyst. Rewrite the status as ONE short, factual sentence (<= 18 words). "
+        "Prefer these verbs: Pending, Submitted, Posted, Denied, Resolved. "
+        "Do NOT explain your reasoning. No prefaces. No quotes."
+    )
+    usr = (
+        "Data:\n"
+        f"- Ticket: {context['Ticket Number']}\n"
+        f"- Invoice: {context['Invoice Number']}\n"
+        f"- Raw status: {context['Status']}\n\n"
+        "Return only the single sentence."
+    )
+    try:
+        msg = chat(
+            [{"role":"system","content":sys},{"role":"user","content":usr}],
+            max_new_tokens=24,
+            temperature=0.0
+        )
+        msg = [ln.strip() for ln in str(msg).split("\n") if ln.strip()]
+        msg = msg[-1] if msg else ""
+        if not msg:
+            return rule_msg
+        if not msg.endswith((".", "!", "?")): msg += "."
+        return msg
+    except Exception:
+        return rule_msg
+
+def status_flag(summary: str) -> str:
+    if "CR on file" in summary or summary.startswith("Resolved"):
+        return "Closed"
+    if "Late" in summary:
+        return "Late"
+    return "On-track"
 
 # =========================
-# Build minimal view
+# Build minimal view from Firebase df
 # =========================
 work = df.copy()
-work[["AI_Status_Summary", "_used_llm"]] = work.apply(
-    lambda r: pd.Series(summarize_status_hybrid(r, use_llm=use_hybrid)),
-    axis=1
-)
+work["AI_Status_Summary"] = work.apply(summarize_status_hybrid, axis=1)
+work["Status_Flag"] = work["AI_Status_Summary"].apply(status_flag)
 
 DISPLAY_COLS = [
-    "Ticket Number", "Invoice Number", "Item Number",
-    "Status", "AI_Status_Summary"
+    "Ticket Number", "Invoice Number", "Item Number", "Status", "AI_Status_Summary"
 ]
 have = [c for c in DISPLAY_COLS if c in work.columns]
 view = work[have].copy()
 
 # =========================
-# Preview + Full table + Download
+# Preview + Full + Download
 # =========================
 st.header("🔎 Status Summaries (sample)")
-sample = view.sample(n=min(n_sample, len(view)),
-                     random_state=None if randomize else 7)
+sample = view.sample(n=min(N_SAMPLE, len(view)),
+                     random_state=None if RANDOMIZE else 7)
 st.dataframe(sample, use_container_width=True, height=520)
 
 st.subheader("Full Table")
