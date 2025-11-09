@@ -7,10 +7,16 @@ from dateutil.parser import parse as dtparse
 from dateutil.relativedelta import relativedelta
 from datetime import datetime, timezone
 
+# ---------- Page setup ----------
+st.set_page_config(page_title="Credit Status Summarizer", layout="wide")
 st.write("🚦 App boot…")
 
-def _t():
-    return time.perf_counter()
+# ---------- Sidebar controls ----------
+use_hybrid = st.sidebar.toggle("Use hybrid (DeepSeek for edge cases)", value=False)
+n_sample   = st.sidebar.slider("Sample size (preview)", 5, 50, 20)
+randomize  = st.sidebar.button("🔀 Shuffle sample")
+
+def _t(): return time.perf_counter()
 
 def _safe_parse_dt(x):
     try: return dtparse(str(x), fuzzy=True)
@@ -49,7 +55,6 @@ def fetch_last_2_months():
         raw = ref.get()
         src = "AdminSDK"
     except Exception:
-        # REST fallback with timeout so the UI doesn’t shimmer forever
         url = "https://creditapp-tm-default-rtdb.firebaseio.com/credit_requests.json"
         resp = requests.get(url, timeout=10)
         resp.raise_for_status()
@@ -91,14 +96,11 @@ MONTH_RX = re.compile(r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|De
 CR_RX    = re.compile(r"\bCR[#:\-\s]*([A-Z0-9\-]{5,})\b", re.I)
 
 def _norm_dt(s: str):
-    try:
-        return dtparse(s, fuzzy=True).date().isoformat()
-    except Exception:
-        return None
+    try: return dtparse(s, fuzzy=True).date().isoformat()
+    except Exception: return None
 
 def extract_dates_any(text: str):
-    if not isinstance(text, str):
-        text = str(text or "")
+    if not isinstance(text, str): text = str(text or "")
     cands = [_norm_dt(m.group(0)) for m in ISO_RX.finditer(text)] + [_norm_dt(m.group(0)) for m in MONTH_RX.finditer(text)]
     cands = [c for c in cands if c]
     latest = max(cands) if cands else None
@@ -107,8 +109,7 @@ def extract_dates_any(text: str):
         p = text.lower().find(kw)
         if p != -1:
             m = ISO_RX.search(text[p:]) or MONTH_RX.search(text[p:])
-            if m:
-                target = _norm_dt(m.group(0)); break
+            if m: target = _norm_dt(m.group(0)); break
     return latest, target
 
 def summarize_status_rule(row):
@@ -116,16 +117,13 @@ def summarize_status_rule(row):
     latest, target = extract_dates_any(s_text)
     cr_val = str(row.get("RTN_CR_No") or "").strip()
     m = CR_RX.search(s_text)
-    if m and not cr_val:
-        cr_val = m.group(1)
+    if m and not cr_val: cr_val = m.group(1)
     has_cr = bool(cr_val)
 
     is_late = False
     if target and not has_cr:
-        try:
-            is_late = datetime.fromisoformat(target).date() < datetime.now(timezone.utc).date()
-        except Exception:
-            pass
+        try: is_late = datetime.fromisoformat(target).date() < datetime.now(timezone.utc).date()
+        except Exception: pass
 
     txt = s_text.lower()
     if has_cr: lead = "Resolved"
@@ -156,7 +154,6 @@ def summarize_status_hybrid(row, use_llm=False):
     rule_msg, meta = summarize_status_rule(row)
     if not (use_llm and needs_llm(meta)):
         return rule_msg, False
-    # Constrained LLM rewrite (requires real chat())
     sys = ("You are a Credit report analyst. Rewrite as ONE short, factual sentence (<=18 words). "
            "Allowed verbs: Pending, Submitted, Posted, Denied, Resolved. No preface, no reasoning.")
     usr = (f"Ticket: {row.get('Ticket Number','')}\n"
@@ -170,10 +167,8 @@ def summarize_status_hybrid(row, use_llm=False):
     return final, True
 
 def status_flag(summary: str) -> str:
-    if "CR on file" in summary or summary.startswith("Resolved"):
-        return "Closed"
-    if "Late" in summary:
-        return "Late"
+    if "CR on file" in summary or summary.startswith("Resolved"): return "Closed"
+    if "Late" in summary: return "Late"
     return "On-track"
 
 def style_flags(df_in: pd.DataFrame) -> pd.io.formats.style.Styler:
@@ -193,7 +188,7 @@ work["Status_Flag"] = work["AI_Status_Summary"].apply(status_flag)
 
 # ---------- Preview ----------
 st.header("🔎 Status Summaries")
-sample = work.sample(n=min(n_sample, len(work)), replace=False if randomize else False, random_state=None if randomize else 7)
+sample = work.sample(n=min(n_sample, len(work)), random_state=None if randomize else 7)
 preview_cols = [c for c in ["Date","Ticket Number","Invoice Number","Item Number","Status","AI_Status_Summary","Status_Flag","_used_llm"] if c in work.columns]
 st.subheader("Preview")
 st.dataframe(style_flags(sample[preview_cols]), use_container_width=True, height=520)
