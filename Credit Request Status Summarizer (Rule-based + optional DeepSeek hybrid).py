@@ -1,31 +1,71 @@
-# app.py
-# Streamlit: Credit Request Status Summarizer (Rule-based + optional DeepSeek hybrid)
-
-import io
-import re
-from datetime import datetime, timezone
-from dateutil.parser import parse as dtparse
-
-import pandas as pd
+# =========================
+# Firebase init
+# =========================
 import streamlit as st
+import pandas as pd
+import firebase_admin
+from firebase_admin import credentials, db
+from dateutil.parser import parse as dtparse
+from dateutil.relativedelta import relativedelta
+from datetime import datetime, timezone
+
+
+@st.cache_resource(show_spinner=False)
+def init_firebase():
+    cfg = dict(st.secrets["firebase"])
+    # Fix escaped newlines if stored as \n
+    if "private_key" in cfg and "\\n" in cfg["private_key"]:
+        cfg["private_key"] = cfg["private_key"].replace("\\n", "\n")
+    cred = credentials.Certificate(cfg)
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app(cred, {
+            "databaseURL": "https://creditapp-tm-default-rtdb.firebaseio.com/"
+        })
+    return True
+
+init_firebase()
 
 # =========================
-# Sidebar: data + options
+# Fetch + filter last 2 months
 # =========================
-st.set_page_config(page_title="Credit Status Summarizer", layout="wide")
+COLUMNS = [
+    "Corrected Unit Price","Credit Request Total","Credit Type","Customer Number","Date",
+    "Extended Price","Invoice Number","Issue Type","Item Number","QTY","Reason for Credit",
+    "Record ID","Requested By","Sales Rep","Status","Ticket Number","Unit Price","Type","RTN_CR_No"
+]
 
-st.sidebar.title("⚙️ Options")
-use_hybrid = st.sidebar.toggle("Use hybrid (DeepSeek for edge cases)", value=False,
-                               help="Fast rules by default. Calls your chat() only when status is long/ambiguous.")
-n_sample = st.sidebar.slider("Sample size (preview)", 5, 50, 20, help="Rows shown in the preview table.")
-randomize = st.sidebar.button("🔀 Shuffle sample")
+def _safe_parse_dt(x):
+    try:
+        return dtparse(str(x), fuzzy=True)
+    except Exception:
+        return pd.NaT
 
-st.sidebar.markdown("---")
-st.sidebar.caption("Upload your CSV exported from iTop / Firebase:")
-uploaded = st.sidebar.file_uploader("CSV file", type=["csv"])
+@st.cache_data(show_spinner=False, ttl=300)  # cache 5 minutes
+def load_credit_requests_last_2_months():
+    ref = db.reference("credit_requests")
+    raw = ref.get() or {}
 
-st.sidebar.markdown("---")
-st.sidebar.caption("Tip: If running inside Colab, you can `df.to_csv()` then upload here.")
+    rows = []
+    for item in raw.values():
+        row = {col: item.get(col, None) for col in COLUMNS}
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+
+    # robust parse + filter last 2 months (to the minute, UTC)
+    df["Date"] = df["Date"].apply(_safe_parse_dt)
+    df = df.dropna(subset=["Date"])
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    cutoff = now - relativedelta(months=2)  # ~ last 2 calendar months
+    df_last2 = df.loc[df["Date"] >= cutoff].copy()
+
+    # (optional) sort newest first
+    df_last2.sort_values("Date", ascending=False, inplace=True)
+    return df_last2
+
+df = load_credit_requests_last_2_months()
+st.success(f"Loaded {len(df):,} credit requests from the last 2 months.")
+st.dataframe(df[["Date","Ticket Number","Invoice Number","Status","RTN_CR_No"]].head(25), use_container_width=True)
 
 # Optional: a simple 'chat' function hook for DeepSeek
 # Replace this stub with your real DeepSeek chat() if you enable hybrid mode.
@@ -158,18 +198,15 @@ def style_flags(df_in: pd.DataFrame) -> pd.io.formats.style.Styler:
 # =========================
 # Load data
 # =========================
-if uploaded is not None:
-    df = pd.read_csv(uploaded, encoding="utf-8", low_memory=False)
-    st.success(f"Loaded {len(df):,} rows, {len(df.columns)} columns.")
-else:
-    st.info("Upload a CSV to begin.")
-    st.stop()
-
-required_cols = {"Status", "Ticket Number", "Invoice Number", "RTN_CR_No"}
-missing = required_cols - set(df.columns)
-if missing:
-    st.error(f"Missing required columns: {sorted(missing)}")
-    st.stop()
+# Produce summaries/flags for the 2-month slice
+df[["AI_Status_Summary","_used_llm"]] = df.apply(
+    lambda r: pd.Series(summarize_status_hybrid(r, use_llm=use_hybrid)),  # or summarize_status_rule for rule-only
+    axis=1
+)
+df["Status_Flag"] = df["AI_Status_Summary"].apply(
+    lambda t: "Closed" if ("CR on file" in t or t.startswith("Resolved"))
+              else ("Late" if "Late" in t else "On-track")
+)
 
 # =========================
 # Summarize
