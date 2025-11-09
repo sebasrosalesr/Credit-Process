@@ -1,4 +1,4 @@
-import os, json, re, requests
+import time, traceback, re, requests
 import streamlit as st
 import pandas as pd
 import firebase_admin
@@ -7,83 +7,77 @@ from dateutil.parser import parse as dtparse
 from dateutil.relativedelta import relativedelta
 from datetime import datetime, timezone
 
-st.set_page_config(page_title="Credit Status Summarizer", layout="wide")
+st.write("🚦 App boot…")
 
-log = st.sidebar.empty()  # live status box
-
-# ---------- sanity: secrets present ----------
-if "firebase" not in st.secrets:
-    st.error("❌ Missing [firebase] in secrets. Add your service account in App → Settings → Secrets.")
-    st.stop()
-
-# ---------- Firebase init with visible errors ----------
-@st.cache_resource(show_spinner=True)
-def init_firebase():
-    try:
-        cfg = dict(st.secrets["firebase"])
-        if "private_key" in cfg and "\\n" in cfg["private_key"]:
-            cfg["private_key"] = cfg["private_key"].replace("\\n", "\n")
-        cred = credentials.Certificate(cfg)
-        if not firebase_admin._apps:
-            firebase_admin.initialize_app(cred, {
-                "databaseURL": "https://creditapp-tm-default-rtdb.firebaseio.com/"
-            })
-        return True
-    except Exception as e:
-        # show the error on the page to debug quickly
-        st.exception(e)
-        raise
-
-ok = init_firebase()
-log.info("✅ Firebase initialized")
-
-# ---------- Safe fetch with timeout (REST fallback) ----------
-COLUMNS = [
-    "Corrected Unit Price","Credit Request Total","Credit Type","Customer Number","Date",
-    "Extended Price","Invoice Number","Issue Type","Item Number","QTY","Reason for Credit",
-    "Record ID","Requested By","Sales Rep","Status","Ticket Number","Unit Price","Type","RTN_CR_No"
-]
+def _t():
+    return time.perf_counter()
 
 def _safe_parse_dt(x):
     try: return dtparse(str(x), fuzzy=True)
     except: return pd.NaT
 
+# 1) Show any missing secrets early
+if "firebase" not in st.secrets:
+    st.error("❌ Missing [firebase] in secrets.")
+    st.stop()
+
+# 2) Init Firebase with visible errors
+t0 = _t()
+try:
+    cfg = dict(st.secrets["firebase"])
+    if "private_key" in cfg and "\\n" in cfg["private_key"]:
+        cfg["private_key"] = cfg["private_key"].replace("\\n", "\n")
+    cred = credentials.Certificate(cfg)
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app(cred, {"databaseURL": "https://creditapp-tm-default-rtdb.firebaseio.com/"})
+    st.write(f"✅ Firebase init in {(_t()-t0)*1000:.0f} ms")
+except Exception:
+    st.error("Firebase init failed:")
+    st.code(traceback.format_exc())
+    st.stop()
+
+# 3) Fetch with timeout + REST fallback (to avoid hangs)
+COLUMNS = ["Corrected Unit Price","Credit Request Total","Credit Type","Customer Number","Date",
+           "Extended Price","Invoice Number","Issue Type","Item Number","QTY","Reason for Credit",
+           "Record ID","Requested By","Sales Rep","Status","Ticket Number","Unit Price","Type","RTN_CR_No"]
+
 @st.cache_data(show_spinner=True, ttl=300)
-def load_credit_requests_last_2_months():
-    """
-    Try Admin SDK first; if anything stalls, use REST with a short timeout to avoid hanging.
-    """
+def fetch_last_2_months():
+    t1 = _t()
     try:
-        # Admin SDK – fast in most environments
         ref = db.reference("credit_requests")
         raw = ref.get()
-    except Exception as e:
-        # fallback to REST (public admin SDK usually bypasses rules; for REST you may need auth if rules block)
-        st.warning(f"Admin SDK fetch failed ({e}). Trying REST fallback…")
+        src = "AdminSDK"
+    except Exception:
+        # REST fallback with timeout so the UI doesn’t shimmer forever
         url = "https://creditapp-tm-default-rtdb.firebaseio.com/credit_requests.json"
-        resp = requests.get(url, timeout=10)  # ⏱ 10s timeout
+        resp = requests.get(url, timeout=10)
         resp.raise_for_status()
         raw = resp.json()
+        src = "REST"
+    dur_fetch = (_t()-t1)*1000
 
     raw = raw or {}
     rows = [{col: item.get(col, None) for col in COLUMNS} for item in raw.values()]
     df = pd.DataFrame(rows)
 
+    t2 = _t()
     df["Date"] = df["Date"].apply(_safe_parse_dt)
     df = df.dropna(subset=["Date"])
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     cutoff = now - relativedelta(months=2)
     df = df[df["Date"] >= cutoff].copy().sort_values("Date", ascending=False)
-    return df
+    dur_parse = (_t()-t2)*1000
+    return df, src, dur_fetch, dur_parse
 
 try:
-    df = load_credit_requests_last_2_months()
-except Exception as e:
-    st.exception(e)
+    df, src, dur_fetch, dur_parse = fetch_last_2_months()
+    st.write(f"📥 Fetch via **{src}**: {dur_fetch:.0f} ms | 🧮 Parse+filter: {dur_parse:.0f} ms | Rows: {len(df):,}")
+    st.dataframe(df.head(10), use_container_width=True)
+except Exception:
+    st.error("Load failed:")
+    st.code(traceback.format_exc())
     st.stop()
-
-st.success(f"Loaded {len(df):,} credit requests from the last 2 months.")
-st.dataframe(df[["Date","Ticket Number","Invoice Number","Status","RTN_CR_No"]].head(25), use_container_width=True)
 
 # ---------- (Optional) DeepSeek chat hook ----------
 def chat(messages, max_new_tokens=24, temperature=0.0):
