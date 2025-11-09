@@ -1,6 +1,7 @@
 # =========================
-# Firebase init
+# Firebase + Summarizer App (last 2 months)
 # =========================
+import re
 import streamlit as st
 import pandas as pd
 import firebase_admin
@@ -9,11 +10,17 @@ from dateutil.parser import parse as dtparse
 from dateutil.relativedelta import relativedelta
 from datetime import datetime, timezone
 
+st.set_page_config(page_title="Credit Status Summarizer", layout="wide")
 
+# ---------- Sidebar controls ----------
+use_hybrid = st.sidebar.toggle("Use hybrid (DeepSeek for edge cases)", value=False)
+n_sample   = st.sidebar.slider("Sample size (preview)", 5, 50, 20)
+randomize  = st.sidebar.button("🔀 Shuffle sample")
+
+# ---------- Firebase init ----------
 @st.cache_resource(show_spinner=False)
 def init_firebase():
     cfg = dict(st.secrets["firebase"])
-    # Fix escaped newlines if stored as \n
     if "private_key" in cfg and "\\n" in cfg["private_key"]:
         cfg["private_key"] = cfg["private_key"].replace("\\n", "\n")
     cred = credentials.Certificate(cfg)
@@ -25,9 +32,7 @@ def init_firebase():
 
 init_firebase()
 
-# =========================
-# Fetch + filter last 2 months
-# =========================
+# ---------- Fetch + filter last 2 months ----------
 COLUMNS = [
     "Corrected Unit Price","Credit Request Total","Credit Type","Customer Number","Date",
     "Extended Price","Invoice Number","Issue Type","Item Number","QTY","Reason for Credit",
@@ -40,44 +45,31 @@ def _safe_parse_dt(x):
     except Exception:
         return pd.NaT
 
-@st.cache_data(show_spinner=False, ttl=300)  # cache 5 minutes
+@st.cache_data(show_spinner=False, ttl=300)
 def load_credit_requests_last_2_months():
     ref = db.reference("credit_requests")
     raw = ref.get() or {}
-
-    rows = []
-    for item in raw.values():
-        row = {col: item.get(col, None) for col in COLUMNS}
-        rows.append(row)
-
+    rows = [{col: item.get(col, None) for col in COLUMNS} for item in raw.values()]
     df = pd.DataFrame(rows)
-
-    # robust parse + filter last 2 months (to the minute, UTC)
     df["Date"] = df["Date"].apply(_safe_parse_dt)
     df = df.dropna(subset=["Date"])
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    cutoff = now - relativedelta(months=2)  # ~ last 2 calendar months
-    df_last2 = df.loc[df["Date"] >= cutoff].copy()
-
-    # (optional) sort newest first
-    df_last2.sort_values("Date", ascending=False, inplace=True)
-    return df_last2
+    cutoff = now - relativedelta(months=2)
+    df = df.loc[df["Date"] >= cutoff].copy()
+    df.sort_values("Date", ascending=False, inplace=True)
+    return df
 
 df = load_credit_requests_last_2_months()
 st.success(f"Loaded {len(df):,} credit requests from the last 2 months.")
 st.dataframe(df[["Date","Ticket Number","Invoice Number","Status","RTN_CR_No"]].head(25), use_container_width=True)
 
-# Optional: a simple 'chat' function hook for DeepSeek
-# Replace this stub with your real DeepSeek chat() if you enable hybrid mode.
+# ---------- (Optional) DeepSeek chat hook ----------
 def chat(messages, max_new_tokens=24, temperature=0.0):
-    # Stub: if you want hybrid, import your real chat() from your local setup.
-    # from your_module import chat as deepseek_chat
-    # return deepseek_chat(messages, max_new_tokens=max_new_tokens, temperature=temperature)
-    raise RuntimeError("Hybrid mode enabled, but no DeepSeek chat() is wired. Provide your chat() implementation.")
+    if use_hybrid:
+        raise RuntimeError("Hybrid enabled, but no DeepSeek chat() wired. Set use_hybrid=False or provide chat().")
+    return ""
 
-# =========================
-# Helpers (dates, rules)
-# =========================
+# ---------- Helpers (dates, rules) ----------
 ISO_RX   = re.compile(r"\b(\d{4})[-/](\d{1,2})[-/](\d{1,2})\b")
 MONTH_RX = re.compile(r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?\,?\s+\d{2,4}\b", re.I)
 CR_RX    = re.compile(r"\bCR[#:\-\s]*([A-Z0-9\-]{5,})\b", re.I)
@@ -91,25 +83,21 @@ def _norm_dt(s: str):
 def extract_dates_any(text: str):
     if not isinstance(text, str):
         text = str(text or "")
-    cands = [_norm_dt(m.group(0)) for m in ISO_RX.finditer(text)] + \
-            [_norm_dt(m.group(0)) for m in MONTH_RX.finditer(text)]
+    cands = [_norm_dt(m.group(0)) for m in ISO_RX.finditer(text)] + [_norm_dt(m.group(0)) for m in MONTH_RX.finditer(text)]
     cands = [c for c in cands if c]
     latest = max(cands) if cands else None
-
     target = None
-    for kw in ("around", "on", "by", "expected", "due"):
+    for kw in ("around","on","by","expected","due"):
         p = text.lower().find(kw)
         if p != -1:
             m = ISO_RX.search(text[p:]) or MONTH_RX.search(text[p:])
             if m:
-                target = _norm_dt(m.group(0))
-                break
+                target = _norm_dt(m.group(0)); break
     return latest, target
 
 def summarize_status_rule(row):
     s_text = str(row.get("Status") or "").strip()
     latest, target = extract_dates_any(s_text)
-
     cr_val = str(row.get("RTN_CR_No") or "").strip()
     m = CR_RX.search(s_text)
     if m and not cr_val:
@@ -124,30 +112,20 @@ def summarize_status_rule(row):
             pass
 
     txt = s_text.lower()
-    if has_cr:
-        lead = "Resolved"
-    elif "denied" in txt or "rejected" in txt:
-        lead = "Denied"
-    elif "posted" in txt:
-        lead = "Posted"
-    elif "submitted" in txt or "billing" in txt or "macro" in txt:
-        lead = "Submitted"
-    else:
-        lead = "Pending"
+    if has_cr: lead = "Resolved"
+    elif "denied" in txt or "rejected" in txt: lead = "Denied"
+    elif "posted" in txt: lead = "Posted"
+    elif "submitted" in txt or "billing" in txt or "macro" in txt: lead = "Submitted"
+    else: lead = "Pending"
 
     if has_cr:
         msg = f"{lead} — CR on file; ticket should be closed (CR#={cr_val})."
     else:
         msg = f"{lead}"
-        if is_late:
-            msg += " — Late."
-        elif target:
-            msg += f"; target={target}."
-        elif latest:
-            msg += f"; last_update={latest}."
-        else:
-            msg += "."
-
+        if is_late: msg += " — Late."
+        elif target: msg += f"; target={target}."
+        elif latest: msg += f"; last_update={latest}."
+        else: msg += "."
     meta = dict(has_cr=has_cr, latest=latest, target=target, s_text=s_text)
     return msg.strip(), meta
 
@@ -162,24 +140,18 @@ def summarize_status_hybrid(row, use_llm=False):
     rule_msg, meta = summarize_status_rule(row)
     if not (use_llm and needs_llm(meta)):
         return rule_msg, False
-
-    # Constrained LLM rewrite
+    # Constrained LLM rewrite (requires real chat())
     sys = ("You are a Credit report analyst. Rewrite as ONE short, factual sentence (<=18 words). "
            "Allowed verbs: Pending, Submitted, Posted, Denied, Resolved. No preface, no reasoning.")
     usr = (f"Ticket: {row.get('Ticket Number','')}\n"
            f"Invoice: {row.get('Invoice Number','')}\n"
            f"Raw status: {meta['s_text']}\n"
            "Return only the single sentence.")
-    try:
-        out = chat([{"role": "system", "content": sys},
-                    {"role": "user", "content": usr}],
-                    max_new_tokens=24, temperature=0.0)
-        final = [ln.strip() for ln in str(out).split("\n") if ln.strip()][-1]
-        if not final.endswith((".", "!", "?")):
-            final += "."
-        return final, True
-    except Exception:
-        return rule_msg, False
+    out = chat([{"role":"system","content":sys},{"role":"user","content":usr}],
+               max_new_tokens=24, temperature=0.0)
+    final = [ln.strip() for ln in str(out).split("\n") if ln.strip()][-1]
+    if not final.endswith((".", "!", "?")): final += "."
+    return final, True
 
 def status_flag(summary: str) -> str:
     if "CR on file" in summary or summary.startswith("Resolved"):
@@ -192,28 +164,10 @@ def style_flags(df_in: pd.DataFrame) -> pd.io.formats.style.Styler:
     def _color(v):
         if v == "Closed": return "background-color: rgba(0,200,0,0.15)"
         if v == "Late":   return "background-color: rgba(255,0,0,0.15)"
-        return "background-color: rgba(255,165,0,0.15)"  # On-track
+        return "background-color: rgba(255,165,0,0.15)"
     return df_in.style.applymap(_color, subset=["Status_Flag"])
 
-# =========================
-# Load data
-# =========================
-# Produce summaries/flags for the 2-month slice
-df[["AI_Status_Summary","_used_llm"]] = df.apply(
-    lambda r: pd.Series(summarize_status_hybrid(r, use_llm=use_hybrid)),  # or summarize_status_rule for rule-only
-    axis=1
-)
-df["Status_Flag"] = df["AI_Status_Summary"].apply(
-    lambda t: "Closed" if ("CR on file" in t or t.startswith("Resolved"))
-              else ("Late" if "Late" in t else "On-track")
-)
-
-# =========================
-# Summarize
-# =========================
-st.header("🔎 Status Summaries")
-
-# Full run (vectorized apply)
+# ---------- Summarize once ----------
 work = df.copy()
 work[["AI_Status_Summary","_used_llm"]] = work.apply(
     lambda r: pd.Series(summarize_status_hybrid(r, use_llm=use_hybrid)),
@@ -221,31 +175,25 @@ work[["AI_Status_Summary","_used_llm"]] = work.apply(
 )
 work["Status_Flag"] = work["AI_Status_Summary"].apply(status_flag)
 
-# Preview sample (random each click)
-if randomize:
-    sample = work.sample(n=min(n_sample, len(work)), replace=False)
-else:
-    sample = work.sample(n=min(n_sample, len(work)), replace=False, random_state=7)
-
-preview_cols = [c for c in ["Ticket Number","Invoice Number","Item Number","Status","AI_Status_Summary","Status_Flag","_used_llm"] if c in work.columns]
+# ---------- Preview ----------
+st.header("🔎 Status Summaries")
+sample = work.sample(n=min(n_sample, len(work)), replace=False if randomize else False, random_state=None if randomize else 7)
+preview_cols = [c for c in ["Date","Ticket Number","Invoice Number","Item Number","Status","AI_Status_Summary","Status_Flag","_used_llm"] if c in work.columns]
 st.subheader("Preview")
 st.dataframe(style_flags(sample[preview_cols]), use_container_width=True, height=520)
 
-# KPI row
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Total", f"{len(work):,}")
-col2.metric("Closed (CR on file)", f"{(work['Status_Flag']=='Closed').sum():,}")
-col3.metric("Late", f"{(work['Status_Flag']=='Late').sum():,}")
-col4.metric("Used LLM (hybrid)", f"{int(work['_used_llm'].sum()):,}")
+# ---------- KPIs ----------
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Total", f"{len(work):,}")
+c2.metric("Closed (CR on file)", f"{(work['Status_Flag']=='Closed').sum():,}")
+c3.metric("Late", f"{(work['Status_Flag']=='Late').sum():,}")
+c4.metric("Used LLM (hybrid)", f"{int(work['_used_llm'].sum()):,}")
 
-# Filters and full table
+# ---------- Full table + download ----------
 st.subheader("Full Table")
 flag_filter = st.multiselect("Filter by Status_Flag", options=["Closed","On-track","Late"], default=["Closed","On-track","Late"])
 show = work.loc[work["Status_Flag"].isin(flag_filter), preview_cols]
 st.dataframe(style_flags(show), use_container_width=True, height=680)
 
-# Download
 csv_bytes = work.to_csv(index=False).encode("utf-8-sig")
 st.download_button("⬇️ Download enriched CSV", data=csv_bytes, file_name="credit_status_summaries.csv", mime="text/csv")
-
-st.caption("Made with ⚡ rules + optional DeepSeek polish. Fast, deterministic, dashboard-ready.")
