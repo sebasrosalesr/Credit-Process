@@ -1,7 +1,4 @@
-# =========================
-# Firebase + Summarizer App (last 2 months)
-# =========================
-import re
+import os, json, re, requests
 import streamlit as st
 import pandas as pd
 import firebase_admin
@@ -12,27 +9,35 @@ from datetime import datetime, timezone
 
 st.set_page_config(page_title="Credit Status Summarizer", layout="wide")
 
-# ---------- Sidebar controls ----------
-use_hybrid = st.sidebar.toggle("Use hybrid (DeepSeek for edge cases)", value=False)
-n_sample   = st.sidebar.slider("Sample size (preview)", 5, 50, 20)
-randomize  = st.sidebar.button("🔀 Shuffle sample")
+log = st.sidebar.empty()  # live status box
 
-# ---------- Firebase init ----------
-@st.cache_resource(show_spinner=False)
+# ---------- sanity: secrets present ----------
+if "firebase" not in st.secrets:
+    st.error("❌ Missing [firebase] in secrets. Add your service account in App → Settings → Secrets.")
+    st.stop()
+
+# ---------- Firebase init with visible errors ----------
+@st.cache_resource(show_spinner=True)
 def init_firebase():
-    cfg = dict(st.secrets["firebase"])
-    if "private_key" in cfg and "\\n" in cfg["private_key"]:
-        cfg["private_key"] = cfg["private_key"].replace("\\n", "\n")
-    cred = credentials.Certificate(cfg)
-    if not firebase_admin._apps:
-        firebase_admin.initialize_app(cred, {
-            "databaseURL": "https://creditapp-tm-default-rtdb.firebaseio.com/"
-        })
-    return True
+    try:
+        cfg = dict(st.secrets["firebase"])
+        if "private_key" in cfg and "\\n" in cfg["private_key"]:
+            cfg["private_key"] = cfg["private_key"].replace("\\n", "\n")
+        cred = credentials.Certificate(cfg)
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app(cred, {
+                "databaseURL": "https://creditapp-tm-default-rtdb.firebaseio.com/"
+            })
+        return True
+    except Exception as e:
+        # show the error on the page to debug quickly
+        st.exception(e)
+        raise
 
-init_firebase()
+ok = init_firebase()
+log.info("✅ Firebase initialized")
 
-# ---------- Fetch + filter last 2 months ----------
+# ---------- Safe fetch with timeout (REST fallback) ----------
 COLUMNS = [
     "Corrected Unit Price","Credit Request Total","Credit Type","Customer Number","Date",
     "Extended Price","Invoice Number","Issue Type","Item Number","QTY","Reason for Credit",
@@ -40,26 +45,43 @@ COLUMNS = [
 ]
 
 def _safe_parse_dt(x):
-    try:
-        return dtparse(str(x), fuzzy=True)
-    except Exception:
-        return pd.NaT
+    try: return dtparse(str(x), fuzzy=True)
+    except: return pd.NaT
 
-@st.cache_data(show_spinner=False, ttl=300)
+@st.cache_data(show_spinner=True, ttl=300)
 def load_credit_requests_last_2_months():
-    ref = db.reference("credit_requests")
-    raw = ref.get() or {}
+    """
+    Try Admin SDK first; if anything stalls, use REST with a short timeout to avoid hanging.
+    """
+    try:
+        # Admin SDK – fast in most environments
+        ref = db.reference("credit_requests")
+        raw = ref.get()
+    except Exception as e:
+        # fallback to REST (public admin SDK usually bypasses rules; for REST you may need auth if rules block)
+        st.warning(f"Admin SDK fetch failed ({e}). Trying REST fallback…")
+        url = "https://creditapp-tm-default-rtdb.firebaseio.com/credit_requests.json"
+        resp = requests.get(url, timeout=10)  # ⏱ 10s timeout
+        resp.raise_for_status()
+        raw = resp.json()
+
+    raw = raw or {}
     rows = [{col: item.get(col, None) for col in COLUMNS} for item in raw.values()]
     df = pd.DataFrame(rows)
+
     df["Date"] = df["Date"].apply(_safe_parse_dt)
     df = df.dropna(subset=["Date"])
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     cutoff = now - relativedelta(months=2)
-    df = df.loc[df["Date"] >= cutoff].copy()
-    df.sort_values("Date", ascending=False, inplace=True)
+    df = df[df["Date"] >= cutoff].copy().sort_values("Date", ascending=False)
     return df
 
-df = load_credit_requests_last_2_months()
+try:
+    df = load_credit_requests_last_2_months()
+except Exception as e:
+    st.exception(e)
+    st.stop()
+
 st.success(f"Loaded {len(df):,} credit requests from the last 2 months.")
 st.dataframe(df[["Date","Ticket Number","Invoice Number","Status","RTN_CR_No"]].head(25), use_container_width=True)
 
