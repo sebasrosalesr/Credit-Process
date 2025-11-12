@@ -107,7 +107,7 @@ def parse_pasted_list(raw: str) -> List[str]:
 # UI
 # =========================
 st.title("🔍 Credit Request Search Tool")
-st.markdown("Search by Ticket, Invoice, Item, Invoice+Item Pair, or use **bulk paste** for Invoices or RTNs.")
+st.markdown("Search by Ticket, Invoice, Item, Invoice+Item Pair, or use **bulk paste** for Invoices, Items, or RTNs.")
 
 search_type = st.selectbox(
     "Search By",
@@ -118,6 +118,7 @@ search_type = st.selectbox(
         "Invoice + Item Pair",
         "Multiple Invoices (paste list)",
         "Multiple RTNs (paste list)",
+        "Multiple Items (paste list)",
     ],
 )
 
@@ -131,10 +132,14 @@ uploaded_file = (
 )
 
 bulk_text = None
-if search_type in ["Multiple Invoices (paste list)", "Multiple RTNs (paste list)"]:
-    label = "Paste Invoice Numbers (one per line/commas/spaces)" if "Invoices" in search_type \
-            else f"Paste RTNs (use the '{RTN_FIELD}' values)"
-    bulk_text = st.text_area(f"📋 {label}", height=200, placeholder="inv13727629\ninv13740599\nINV14015686\nRTNCM0034858")
+if search_type in ["Multiple Invoices (paste list)", "Multiple RTNs (paste list)", "Multiple Items (paste list)"]:
+    if "Invoices" in search_type:
+        label = "Paste Invoice Numbers (one per line/commas/spaces)"
+    elif "RTNs" in search_type:
+        label = f"Paste RTNs (use the '{RTN_FIELD}' values)"
+    else:
+        label = "Paste Item Numbers (one per line/commas/spaces)"
+    bulk_text = st.text_area(f"📋 {label}", height=200, placeholder="12345\nABC-678\nITEM001")
 
 # =========================
 # SEARCH
@@ -148,7 +153,7 @@ if st.button("🔎 Search"):
 
         if data:
             # bulk list
-            if search_type in ["Multiple Invoices (paste list)", "Multiple RTNs (paste list)"]:
+            if search_type in ["Multiple Invoices (paste list)", "Multiple RTNs (paste list)", "Multiple Items (paste list)"]:
                 pasted_values = parse_pasted_list(bulk_text or "")
                 if not pasted_values:
                     st.warning("⚠️ Paste at least one value to search.")
@@ -200,6 +205,9 @@ if st.button("🔎 Search"):
                 elif search_type == "Multiple RTNs (paste list)":
                     if rtn and rtn in pasted_set:
                         match = True
+                elif search_type == "Multiple Items (paste list)":
+                    if item and item in pasted_set:
+                        match = True
 
                 if match:
                     out = dict(record)
@@ -209,18 +217,23 @@ if st.button("🔎 Search"):
             # CSV pair matches post-iteration
             if pair_mode_with_csv and pair_wanted:
                 for key, record in (data or {}).items():
-                    inv = norm(record.get(INVOICE_FIELD, ""))
-                    item = norm(record.get(ITEM_FIELD, ""))
-                    if (inv, item) in pair_wanted:
+                    inv2 = norm(record.get(INVOICE_FIELD, ""))
+                    item2 = norm(record.get(ITEM_FIELD, ""))
+                    if (inv2, item2) in pair_wanted:
                         out = dict(record)
                         out["Record ID"] = key
-                        out["Search_Invoice"] = inv
-                        out["Search_Item"] = item
+                        out["Search_Invoice"] = inv2
+                        out["Search_Item"] = item2
                         matches.append(out)
 
-            # not found list for bulk
-            if search_type in ["Multiple Invoices (paste list)", "Multiple RTNs (paste list)"]:
-                field_name = INVOICE_FIELD if "Invoices" in search_type else RTN_FIELD
+            # not-found list for bulk modes
+            if search_type in ["Multiple Invoices (paste list)", "Multiple RTNs (paste list)", "Multiple Items (paste list)"]:
+                if "Invoices" in search_type:
+                    field_name = INVOICE_FIELD
+                elif "RTNs" in search_type:
+                    field_name = RTN_FIELD
+                else:
+                    field_name = ITEM_FIELD
                 matched_values = set()
                 for rec in matches:
                     val = norm(rec.get(field_name, ""))
@@ -234,7 +247,7 @@ if st.button("🔎 Search"):
         if matches:
             st.success(f"✅ {len(matches)} record(s) found.")
 
-            if search_type in ["Multiple Invoices (paste list)", "Multiple RTNs (paste list)"]:
+            if search_type in ["Multiple Invoices (paste list)", "Multiple RTNs (paste list)", "Multiple Items (paste list)"]:
                 matched_count = len(set(pasted_values) - set(not_found))
                 st.info(f"🔎 Pasted: {len(pasted_values)} • ✅ Matched: {matched_count} • ❌ Not found: {len(not_found)}")
 
@@ -276,11 +289,7 @@ if st.button("🔎 Search"):
                     with st.expander(f"Record {i} — Ticket: {rec.get(TICKET_FIELD, 'N/A')}"):
                         st.json(rec)
 
-            if search_type in ["Multiple Invoices (paste list)", "Multiple RTNs (paste list)"] and not_found:
-                with st.expander("❌ Not Found"):
-                    st.code("\n".join(not_found))
-
-            # Clean CSV export (same cleaned strings)
+            # CSV download
             csv_buffer = io.StringIO()
             df_export.to_csv(csv_buffer, index=False)
             st.download_button(
