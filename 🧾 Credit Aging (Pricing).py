@@ -157,7 +157,7 @@ df_view = df[mask].copy()
 
 # Display columns
 desired_cols = [
-    "Age (days)", "Aging Bucket", "Date_parsed",
+    "Age (days)", "Aging Bucket", "Date_parsed","Customer Number",
     "Ticket Number", "Invoice Number", "Item Number",
     "Credit Request Total", "RTN_CR_No",
     "Requested By", "Sales Rep", "Status", "Record ID",
