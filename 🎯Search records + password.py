@@ -164,7 +164,7 @@ if search_type in [
         placeholder = "ABC-678\nITEM001\n12345"
     elif "Customers" in search_type:
         label = "Paste Customer Numbers OR Name Fragments (one per line/commas/spaces)"
-        placeholder = "YAM\nSEI\nSAINT JOSEPH"
+        placeholder = "YAM\nSEI\nSST"
     else:
         label = f"Paste RTNs (use the '{RTN_FIELD}' values)"
         placeholder = "RTNCM0034858\nRTNCM0034999"
