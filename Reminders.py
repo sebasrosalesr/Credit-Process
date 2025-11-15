@@ -335,23 +335,23 @@ def render_exports():
             if uploaded and st.button("Import Now"):
                 try:
                     script = uploaded.read().decode("utf-8")
-                with st.spinner("Importing safely..."):
-                    # Step 1: Load dump into in-memory DB
-                    temp_db = sqlite3.connect(":memory:")
-                    temp_db.executescript(script)
-                    temp_db.commit()
+                    with st.spinner("Importing safely..."):
+                        # Step 1: Load dump into in-memory DB
+                        temp_db = sqlite3.connect(":memory:")
+                        temp_db.executescript(script)
+                        temp_db.commit()
 
                     # Step 2: Use SQLite backup API (atomic, no locks)
                         with sqlite3.connect(DB_PATH) as target_db:
                            temp_db.backup(target_db)
                            target_db.commit()
 
-                    temp_db.close()
-                st.success("Import complete! App refreshed.")
-                time.sleep(1)
-                st.rerun()
-            except Exception as e:
-                st.error(f"Import failed: {str(e)}")
+                        temp_db.close()
+                   st.success("Import complete! App refreshed.")
+                   time.sleep(1)
+                   st.rerun()
+                except Exception as e:
+                   st.error(f"Import failed: {str(e)}")
       
 
 # =========================
