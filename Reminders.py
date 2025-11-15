@@ -333,8 +333,8 @@ def render_exports():
         with st.expander("Import SQL Dump"):
             uploaded = st.file_uploader("Upload .sql", type=["sql"], key="import_sql")
             if uploaded and st.button("Import Now"):
-            try:
-                script = uploaded.read().decode("utf-8")
+                try:
+                    script = uploaded.read().decode("utf-8")
                 with st.spinner("Importing safely..."):
                     # Step 1: Load dump into in-memory DB
                     temp_db = sqlite3.connect(":memory:")
@@ -342,9 +342,9 @@ def render_exports():
                     temp_db.commit()
 
                     # Step 2: Use SQLite backup API (atomic, no locks)
-                    with sqlite3.connect(DB_PATH) as target_db:
-                        temp_db.backup(target_db)
-                        target_db.commit()
+                        with sqlite3.connect(DB_PATH) as target_db:
+                           temp_db.backup(target_db)
+                           target_db.commit()
 
                     temp_db.close()
                 st.success("Import complete! App refreshed.")
