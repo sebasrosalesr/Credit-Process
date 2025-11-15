@@ -330,9 +330,9 @@ def render_exports():
 
     # Import SQL
     with c3:
-    with st.expander("Import SQL Dump"):
-        uploaded = st.file_uploader("Upload .sql", type=["sql"], key="import_sql")
-        if uploaded and st.button("Import Now"):
+        with st.expander("Import SQL Dump"):
+            uploaded = st.file_uploader("Upload .sql", type=["sql"], key="import_sql")
+            if uploaded and st.button("Import Now"):
             try:
                 script = uploaded.read().decode("utf-8")
                 with st.spinner("Importing safely..."):
@@ -352,7 +352,7 @@ def render_exports():
                 st.rerun()
             except Exception as e:
                 st.error(f"Import failed: {str(e)}")
-render_exports()
+      
 
 # =========================
 # FOOTER
