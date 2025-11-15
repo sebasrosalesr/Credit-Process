@@ -13,7 +13,7 @@ import streamlit as st
 # =========================
 # CONFIG FIRST (Streamlit)
 # =========================
-st.set_page_config(page_title="RemindTwin", page_icon="⏰", layout="centered")
+st.set_page_config(page_title="Reminders", page_icon="⏰", layout="centered")
 
 # =========================
 # SECURITY: Password + Session Timeout
@@ -72,7 +72,7 @@ with st.sidebar:
 # =========================
 # APP HEADER / PATHS
 # =========================
-st.title("⏰ RemindTwin – Personal AI Task OS")
+st.title("⏰ Reminder – Personal Task OS")
 
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
