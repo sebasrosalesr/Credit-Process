@@ -347,11 +347,11 @@ def render_exports():
                            target_db.commit()
 
                         temp_db.close()
-                   st.success("Import complete! App refreshed.")
-                   time.sleep(1)
-                   st.rerun()
+                    st.success("Import complete! App refreshed.")
+                    time.sleep(1)
+                    st.rerun()
                 except Exception as e:
-                   st.error(f"Import failed: {str(e)}")
+                    st.error(f"Import failed: {str(e)}")
       
 
 # =========================
