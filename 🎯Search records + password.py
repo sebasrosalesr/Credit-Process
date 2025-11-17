@@ -120,7 +120,7 @@ def parse_pasted_list(raw: str) -> List[str]:
 st.title("🔍 Credit Request Search Tool")
 st.markdown(
     "Search by Ticket, Invoice, Item, Invoice+Item Pair, or use **bulk paste** for "
-    "**Invoices, Items, Customers, or RTNs**."
+    "**Tickets, Invoices, Items, Customers, or RTNs**."
 )
 
 search_type = st.selectbox(
@@ -130,9 +130,10 @@ search_type = st.selectbox(
         "Invoice Number",
         "Item Number",
         "Invoice + Item Pair",
+        "Multiple Tickets (paste list)",        # ✅ NEW
         "Multiple Invoices (paste list)",
         "Multiple Items (paste list)",
-        "Multiple Customers (paste list)",   # NEW
+        "Multiple Customers (paste list)",
         "Multiple RTNs (paste list)",
     ],
 )
@@ -151,6 +152,7 @@ customer_mode = None
 customer_search_name = None
 
 if search_type in [
+    "Multiple Tickets (paste list)",          # ✅ NEW
     "Multiple Invoices (paste list)",
     "Multiple RTNs (paste list)",
     "Multiple Items (paste list)",
@@ -165,6 +167,9 @@ if search_type in [
     elif "Customers" in search_type:
         label = "Paste Customer Numbers OR Name Fragments (one per line/commas/spaces)"
         placeholder = "YAM\nSEI\nSST"
+    elif "Tickets" in search_type:  # ✅ NEW
+        label = "Paste Ticket Numbers (one per line/commas/spaces)"
+        placeholder = "R-052066\nR-048500\nR-050321"
     else:
         label = f"Paste RTNs (use the '{RTN_FIELD}' values)"
         placeholder = "RTNCM0034858\nRTNCM0034999"
@@ -197,6 +202,7 @@ if st.button("🔎 Search"):
         if data:
             # ----- bulk list parsing -----
             if search_type in [
+                "Multiple Tickets (paste list)",      # ✅ NEW
                 "Multiple Invoices (paste list)",
                 "Multiple RTNs (paste list)",
                 "Multiple Items (paste list)",
@@ -257,6 +263,10 @@ if st.button("🔎 Search"):
                         if inv == find_invoice and item == find_item:
                             match = True
 
+                elif search_type == "Multiple Tickets (paste list)":  # ✅ NEW
+                    if ticket and ticket in pasted_set:
+                        match = True
+
                 elif search_type == "Multiple Invoices (paste list)":
                     if inv and inv in pasted_set:
                         match = True
@@ -304,6 +314,7 @@ if st.button("🔎 Search"):
 
             # ----- build not_found for all bulk modes -----
             if search_type in [
+                "Multiple Tickets (paste list)",      # ✅ NEW
                 "Multiple Invoices (paste list)",
                 "Multiple RTNs (paste list)",
                 "Multiple Items (paste list)",
@@ -315,6 +326,8 @@ if st.button("🔎 Search"):
                     field_name = ITEM_FIELD
                 elif search_type == "Multiple RTNs (paste list)":
                     field_name = RTN_FIELD
+                elif search_type == "Multiple Tickets (paste list)":   # ✅ NEW
+                    field_name = TICKET_FIELD
                 else:
                     field_name = None  # customer uses found_tokens
 
@@ -335,6 +348,7 @@ if st.button("🔎 Search"):
             st.success(f"✅ {len(matches)} record(s) found.")
 
             if search_type in [
+                "Multiple Tickets (paste list)",      # ✅ NEW
                 "Multiple Invoices (paste list)",
                 "Multiple RTNs (paste list)",
                 "Multiple Items (paste list)",
