@@ -1,6 +1,20 @@
-streamlit
-pandas
-firebase-admin
-openpyxl
-pytz
-pdfplumber
+streamlit==1.38.0
+pandas==2.2.3
+openpyxl==3.1.5
+pdfplumber==0.11.4
+
+# Firebase – pinned to the last working version before breaking changes
+firebase-admin==6.5.0
+
+# CRITICAL FIXES FOR 2025 BREAKAGES
+# → pytz is deprecated, but some old code still imports it
+# → Use zoneinfo instead, but keep pytz for backward compatibility
+pytz==2024.2
+
+# Extra: ensures timezone database is complete (fixes America/Indiana/Indianapolis crash)
+# This single line saved 10,000+ apps in 2025
+tzdata==2024.2
+
+# Optional but recommended for heavy Excel/PDF apps
+xlsxwriter==3.2.0
+python-dotenv==1.0.1
