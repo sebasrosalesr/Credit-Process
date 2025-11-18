@@ -9,16 +9,6 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 
-import os
-os.makedirs("/tmp/app_data", exist_ok=True)          # ← fixes read-only FS
-st.set_page_config(page_icon="rocket")               # ← single emoji only!
-
-# Bulletproof timezone (covers 90% of the crashes)
-from zoneinfo import ZoneInfo
-try:
-    TZ = ZoneInfo("America/Indiana/Indianapolis")
-except:
-    TZ = ZoneInfo("US/Eastern")
 
 # ====================== FIX #1: Safe page icon ======================
 st.set_page_config(
