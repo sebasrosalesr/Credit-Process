@@ -1,5 +1,24 @@
-# reminders_app.py
-# --- FORCE DARK MODE FOR THIS APP ONLY ---
+# Reminders.py
+
+import os
+import io
+import json
+import time
+import sqlite3
+from datetime import datetime, timedelta, timezone, time as dtime
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+import streamlit as st
+
+# 🔹 THIS MUST BE THE FIRST STREAMLIT CALL
+st.set_page_config(
+    page_title="Reminders",
+    page_icon="⏰",      # single emoji is perfect
+    layout="centered"
+)
+
+# (optional) Dark mode CSS JUST AFTER page_config
 dark_css = """
 <style>
 body {
@@ -11,27 +30,7 @@ body {
 }
 </style>
 """
-import streamlit as st
 st.markdown(dark_css, unsafe_allow_html=True)
-
-
-import os
-import io
-import json
-import time
-import sqlite3
-from datetime import datetime, timedelta, timezone, time as dtime
-from zoneinfo import ZoneInfo
-import pandas as pd
-import streamlit as st
-
-
-# ====================== FIX #1: Safe page icon ======================
-st.set_page_config(
-    page_title="Reminders",
-    page_icon="⏰",        # single emoji or short string only!
-    layout="centered"
-)
 
 # ====================== FIX #2: Writable directory ======================
 DATA_DIR = "/tmp/remindtwin_data"
