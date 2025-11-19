@@ -18,20 +18,6 @@ st.set_page_config(
     layout="centered"
 )
 
-# (optional) Dark mode CSS JUST AFTER page_config
-dark_css = """
-<style>
-body {
-    background-color: #0E1117 !important;
-    color: white !important;
-}
-[class^="st-"] {
-    color: white !important;
-}
-</style>
-"""
-st.markdown(dark_css, unsafe_allow_html=True)
-
 # ====================== FIX #2: Writable directory ======================
 DATA_DIR = "/tmp/remindtwin_data"
 os.makedirs(DATA_DIR, exist_ok=True)
