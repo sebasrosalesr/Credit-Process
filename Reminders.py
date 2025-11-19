@@ -164,6 +164,52 @@ else:
                     snooze(r.id, 24)
                     st.rerun()
 
+# ====================== DONE REMINDERS ======================
+st.divider()
+st.subheader("Completed Reminders ✔️")
+
+def fetch_done():
+    with sqlite3.connect(DB_PATH) as con:
+        df = pd.read_sql_query(
+            "SELECT id, created_at, due_at, ticket, note FROM reminders WHERE done=1 ORDER BY due_at DESC",
+            con
+        )
+    if not df.empty:
+        df["created_at"] = pd.to_datetime(df["created_at"], utc=True)
+        df["due_at"]     = pd.to_datetime(df["due_at"], utc=True)
+    return df
+
+df_done = fetch_done()
+
+if df_done.empty:
+    st.caption("No completed reminders yet.")
+else:
+    # Show summary table
+    st.dataframe(
+        df_done[["ticket", "note", "created_at", "due_at"]],
+        use_container_width=True,
+        hide_index=True
+    )
+
+    # Export Done → CSV
+    done_csv = df_done.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="⬇️ Download Completed (CSV)",
+        data=done_csv,
+        file_name=f"completed_{today_local}.csv",
+        mime="text/csv"
+    )
+
+    # Delete all completed reminders
+    if st.button("🗑️ Clear Completed Reminders"):
+        try:
+            with sqlite3.connect(DB_PATH) as con:
+                con.execute("DELETE FROM reminders WHERE done=1;")
+            st.success("Completed reminders cleared.")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Error clearing completed reminders: {e}")
+
 # ====================== EXPORT / IMPORT ======================
 st.divider()
 today_local = datetime.now(EOD_TZ).date().isoformat()
