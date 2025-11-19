@@ -184,6 +184,9 @@ df_done = fetch_done()
 if df_done.empty:
     st.caption("No completed reminders yet.")
 else:
+    # Small local date just for this section
+    today_local_done = datetime.now(EOD_TZ).date().isoformat()
+
     # Show summary table
     st.dataframe(
         df_done[["ticket", "note", "created_at", "due_at"]],
@@ -196,7 +199,7 @@ else:
     st.download_button(
         label="⬇️ Download Completed (CSV)",
         data=done_csv,
-        file_name=f"completed_{today_local}.csv",
+        file_name=f"completed_{today_local_done}.csv",
         mime="text/csv"
     )
 
