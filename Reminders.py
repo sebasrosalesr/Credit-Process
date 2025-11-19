@@ -1,4 +1,20 @@
 # reminders_app.py
+# --- FORCE DARK MODE FOR THIS APP ONLY ---
+dark_css = """
+<style>
+body {
+    background-color: #0E1117 !important;
+    color: white !important;
+}
+[class^="st-"] {
+    color: white !important;
+}
+</style>
+"""
+import streamlit as st
+st.markdown(dark_css, unsafe_allow_html=True)
+
+
 import os
 import io
 import json
