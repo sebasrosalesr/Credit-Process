@@ -740,7 +740,7 @@ if st.button("🔎 Search"):
             st.success(f"✅ {len(matches)} record(s) found.")
 
             if search_type in [
-                "Multiple Tickets (paste list)",      # ✅ NEW
+                "Multiple Tickets (paste list)",
                 "Multiple Invoices (paste list)",
                 "Multiple RTNs (paste list)",
                 "Multiple Items (paste list)",
@@ -751,7 +751,7 @@ if st.button("🔎 Search"):
 
             df_export = pd.DataFrame(matches)
 
-            # Normalize display: keep IDs as text and uppercase
+            # Normalize display
             for col in ID_FIELDS:
                 if col in df_export.columns:
                     df_export[col] = df_export[col].map(clean_num_str).astype("string")
@@ -759,12 +759,11 @@ if st.button("🔎 Search"):
                 if col in df_export.columns:
                     df_export[col] = df_export[col].str.upper()
 
-            # Money rounding to kill float noise
             for col in MONEY_FIELDS:
                 if col in df_export.columns:
                     df_export[col] = pd.to_numeric(df_export[col], errors="coerce").round(2)
 
-            # Render table
+            # Render Table
             st.dataframe(
                 df_export,
                 use_container_width=True,
@@ -782,10 +781,11 @@ if st.button("🔎 Search"):
                 },
             )
 
-                st.subheader("📦 JSON view (per record)")
-                for i, rec in enumerate(matches, 1):
-                     with st.expander(f"Record {i} — Ticket: {rec.get(TICKET_FIELD, 'N/A')}"):
-                        st.json(rec)
+            # ✅ FIXED JSON VIEW (no nested expanders)
+            st.subheader("📦 JSON view (per record)")
+            for i, rec in enumerate(matches, 1):
+                with st.expander(f"Record {i} — Ticket: {rec.get(TICKET_FIELD, 'N/A')}"):
+                    st.json(rec)
 
             # CSV download
             csv_buffer = io.StringIO()
@@ -796,23 +796,6 @@ if st.button("🔎 Search"):
                 file_name="credit_request_results.csv",
                 mime="text/csv"
             )
+
         else:
             st.warning("❌ No matching records found.")
-
-    except Exception as e:
-        st.error(f"🔥 Error retrieving records: {e}")
-
-            # CSV download
-            csv_buffer = io.StringIO()
-            df_export.to_csv(csv_buffer, index=False)
-            st.download_button(
-                label="⬇️ Download Results as CSV",
-                data=csv_buffer.getvalue(),
-                file_name="credit_request_results.csv",
-                mime="text/csv"
-            )
-        else:
-            st.warning("❌ No matching records found.")
-
-    except Exception as e:
-        st.error(f"🔥 Error retrieving records: {e}")
