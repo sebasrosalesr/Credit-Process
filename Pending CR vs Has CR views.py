@@ -70,21 +70,20 @@ def fetch_credits_df() -> pd.DataFrame:
     if df.empty:
         return df
 
-    # Parse "Date"
+    # Parse "Date" → keep ALL rows, even if NaT
     df["Date_parsed"] = df["Date"].apply(safe_parse_force_string)
-    df = df.dropna(subset=["Date_parsed"]).copy()
 
-    # Age in days
+    # Age in days (NaN if Date_parsed is NaT)
     today = pd.Timestamp(date.today())
     df["Age (days)"] = (today - df["Date_parsed"]).dt.days
 
-    # Optional: parse close/resolution dates if present
+    # Optional: parse close/resolution dates if present (also keep NaT)
     if "Close date" in df.columns:
         df["Close_date_parsed"] = df["Close date"].apply(safe_parse_force_string)
     if "Resolution date" in df.columns:
         df["Resolution_date_parsed"] = df["Resolution date"].apply(safe_parse_force_string)
 
-    # Aging buckets
+    # Aging buckets (NaN if Age (days) is NaN)
     bins = [-1, 7, 14, 30, 60, 90, 180, 365, 10_000]
     labels = ["0-7", "8-14", "15-30", "31-60", "61-90", "91-180", "181-365", "365+"]
     df["Aging Bucket"] = pd.cut(df["Age (days)"], bins=bins, labels=labels)
