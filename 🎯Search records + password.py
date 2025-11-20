@@ -392,7 +392,7 @@ if st.button("🔎 Search"):
 
                 st.subheader("📦 JSON view (per record)")
                 for i, rec in enumerate(matches, 1):
-                    with st.expander(f"Record {i} — Ticket: {rec.get(TICKET_FIELD, 'N/A')}"):
+                     with st.expander(f"Record {i} — Ticket: {rec.get(TICKET_FIELD, 'N/A')}"):
                         st.json(rec)
 
             # CSV download
