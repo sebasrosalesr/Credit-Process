@@ -390,7 +390,7 @@ if st.button("🔎 Search"):
                 },
             )
 
-            with st.expander("📦 JSON view (per record)"):
+                st.subheader("📦 JSON view (per record)")
                 for i, rec in enumerate(matches, 1):
                     with st.expander(f"Record {i} — Ticket: {rec.get(TICKET_FIELD, 'N/A')}"):
                         st.json(rec)
