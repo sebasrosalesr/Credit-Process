@@ -1,0 +1,266 @@
+from datetime import datetime
+import math
+from typing import Iterable, Dict, Any, Tuple
+from collections import defaultdict
+
+import pandas as pd
+import streamlit as st
+
+import firebase_admin
+from firebase_admin import credentials, db
+
+# =========================
+# Page + Auth
+# =========================
+st.set_page_config(page_title="🩺 Duplicate Doctor — Credit Requests", layout="wide")
+
+APP_PASSWORD  = st.secrets.get("APP_PASSWORD", "test123")
+SESSION_TTL   = 30 * 60  # 30 min
+MAX_ATTEMPTS  = 5
+LOCKOUT_SEC   = 60
+
+def check_password():
+    now = datetime.now().timestamp()
+    ss = st.session_state
+    ss.setdefault("auth_ok", False)
+    ss.setdefault("last_seen", 0.0)
+    ss.setdefault("bad_attempts", 0)
+    ss.setdefault("locked_until", 0.0)
+
+    if ss["auth_ok"]:
+        if now - ss["last_seen"] > SESSION_TTL:
+            ss["auth_ok"] = False
+        else:
+            ss["last_seen"] = now
+            return True
+
+    if now < ss["locked_until"]:
+        st.error("Too many attempts. Try again in a minute.")
+        st.stop()
+
+    st.title("🔒 Private Access — Duplicate Doctor")
+    pwd = st.text_input("Enter password:", type="password")
+    if st.button("Login"):
+        if pwd == APP_PASSWORD:
+            ss.update(auth_ok=True, last_seen=now, bad_attempts=0)
+            st.rerun()
+        else:
+            ss["bad_attempts"] += 1
+            if ss["bad_attempts"] >= MAX_ATTEMPTS:
+                ss["locked_until"] = now + LOCKOUT_SEC
+                ss["bad_attempts"] = 0
+            st.error("❌ Incorrect password")
+            st.stop()
+    st.stop()
+
+if not check_password():
+    st.stop()
+
+st.title("🩺 Duplicate Doctor — Credit Request Scanner")
+
+st.caption(
+    "This tool scans **Firebase → `credit_requests`** for logical duplicates using a "
+    "composite key of Ticket, Invoice, Item, QTY, and Credit Request Total."
+)
+
+# =========================
+# Firebase Init
+# =========================
+firebase_config = dict(st.secrets["firebase"])
+firebase_config["private_key"] = firebase_config["private_key"].replace("\\n", "\n")
+cred = credentials.Certificate(firebase_config)
+if not firebase_admin._apps:
+    firebase_admin.initialize_app(
+        cred,
+        {"databaseURL": "https://creditapp-tm-default-rtdb.firebaseio.com/"},
+    )
+
+ref = db.reference("credit_requests")
+
+# =========================
+# Helpers / Normalizers
+# =========================
+def as_str(x) -> str:
+    return "" if x is None else str(x).strip()
+
+def norm_invoice(x) -> str:
+    return as_str(x).upper()
+
+def norm_item(x) -> str:
+    s = as_str(x)
+    if s.endswith(".0"):
+        try:
+            f = float(s)
+            if f.is_integer():
+                return str(int(f))
+        except ValueError:
+            pass
+    return s
+
+def norm_ticket(x) -> str:
+    return as_str(x).upper()
+
+def safe_float(x):
+    try:
+        if x is None or (isinstance(x, float) and math.isnan(x)):
+            return None
+        return float(x)
+    except Exception:
+        return None
+
+def safe_int(x):
+    try:
+        if x is None or (isinstance(x, float) and math.isnan(x)):
+            return None
+        f = float(x)
+        if f.is_integer():
+            return int(f)
+        return f  # leave as float if truly fractional
+    except Exception:
+        return None
+
+def make_dedupe_key(rec: Dict[str, Any]) -> Tuple:
+    """
+    Composite key used to define a 'logical duplicate'.
+    Adjust if you want more/less strict matching.
+    """
+    return (
+        norm_ticket(rec.get("Ticket Number", "")),
+        norm_invoice(rec.get("Invoice Number", "")),
+        norm_item(rec.get("Item Number", "")) if rec.get("Item Number") is not None else None,
+        safe_int(rec.get("QTY", None)),
+        safe_float(rec.get("Credit Request Total", None)),
+    )
+
+# =========================
+# Scan Firebase
+# =========================
+st.header("Step 1: Scan Firebase for Duplicates")
+
+if st.button("🔍 Run Duplicate Scan", type="primary"):
+    with st.spinner("Scanning Firebase credit_requests…"):
+        raw_data = ref.get() or {}
+
+        records = []
+        for fb_key, rec in raw_data.items():
+            if not isinstance(rec, dict):
+                continue
+
+            # Build a flattened, normalized view
+            ticket = norm_ticket(rec.get("Ticket Number", ""))
+            invoice = norm_invoice(rec.get("Invoice Number", ""))
+            item = (
+                norm_item(rec.get("Item Number", ""))
+                if rec.get("Item Number") is not None
+                else None
+            )
+            qty = safe_int(rec.get("QTY", None))
+            cr_total = safe_float(rec.get("Credit Request Total", None))
+
+            record = {
+                "_firebase_key": fb_key,
+                "Ticket Number": ticket,
+                "Invoice Number": invoice,
+                "Item Number": item,
+                "QTY": qty,
+                "Credit Request Total": cr_total,
+                "Credit Type": as_str(rec.get("Credit Type", "")),
+                "Type": as_str(rec.get("Type", "")),
+                "Issue Type": as_str(rec.get("Issue Type", "")),
+                "Requested By": as_str(rec.get("Requested By", "")),
+                "Sales Rep": as_str(rec.get("Sales Rep", "")),
+                "Date": as_str(rec.get("Date", "")),
+                "Record ID": as_str(rec.get("Record ID", "")),
+                "Status": as_str(rec.get("Status", "")),
+                "Customer Number": as_str(rec.get("Customer Number", "")),
+                "Invoice Raw": as_str(rec.get("Invoice Number", "")),
+                "Item Raw": as_str(rec.get("Item Number", "")),
+            }
+
+            record["Dedupe Key"] = make_dedupe_key(record)
+            records.append(record)
+
+        if not records:
+            st.warning("No records found in Firebase `credit_requests`.")
+        else:
+            # Group by dedupe key
+            by_key = defaultdict(list)
+            for rec in records:
+                by_key[rec["Dedupe Key"]].append(rec)
+
+            duplicate_groups = {k: v for k, v in by_key.items() if len(v) > 1}
+
+            total_records = len(records)
+            total_groups = len(duplicate_groups)
+            total_dupes = sum(len(v) for v in duplicate_groups.values())
+
+            st.success("✅ Scan complete!")
+
+            st.metric("Total records scanned", f"{total_records:,}")
+            st.metric("Duplicate groups found", f"{total_groups:,}")
+            st.metric("Total duplicate rows (in those groups)", f"{total_dupes:,}")
+
+            if total_groups == 0:
+                st.info("No logical duplicates found with the current dedupe key.")
+            else:
+                # Flatten duplicate groups into a DataFrame
+                flat_rows = []
+                for key, group_recs in duplicate_groups.items():
+                    group_size = len(group_recs)
+                    for rec in group_recs:
+                        row = rec.copy()
+                        row["Duplicate Group Size"] = group_size
+                        row["Dedupe Key (str)"] = str(key)
+                        flat_rows.append(row)
+
+                dup_df = pd.DataFrame(flat_rows)
+
+                # Keep a lighter default view
+                display_cols = [
+                    "Duplicate Group Size",
+                    "Ticket Number",
+                    "Invoice Number",
+                    "Item Number",
+                    "QTY",
+                    "Credit Request Total",
+                    "Credit Type",
+                    "Issue Type",
+                    "Sales Rep",
+                    "Requested By",
+                    "Date",
+                    "_firebase_key",
+                    "Record ID",
+                    "Dedupe Key (str)",
+                ]
+
+                st.subheader("Duplicate Records (Grouped View)")
+                st.caption(
+                    "Each row below is part of a group where the composite key "
+                    "(Ticket, Invoice, Item, QTY, Credit Total) appears more than once."
+                )
+
+                st.dataframe(
+                    dup_df[display_cols].sort_values(
+                        ["Duplicate Group Size", "Ticket Number", "Invoice Number"],
+                        ascending=[False, True, True],
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                # Download CSV
+                csv_bytes = dup_df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    "📥 Download Duplicate Report (CSV)",
+                    data=csv_bytes,
+                    file_name=f"duplicate_doctor_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                )
+
+else:
+    st.info("Click **'🔍 Run Duplicate Scan'** to analyze current Firebase records.")
+
+# Sidebar logout
+if st.sidebar.button("Logout"):
+    st.session_state["auth_ok"] = False
+    st.rerun()
