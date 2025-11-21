@@ -109,7 +109,7 @@ if not results.empty:
         "Corrected Unit Price", "Credit Request Total", "Credit Type", "Customer Number", "Date",
         "Extended Price", "Invoice Number", "Issue Type", "Item Number", "QTY",
         "Reason for Credit", "Requested By", "Sales Rep", "Status",
-        "Ticket Number", "Unit Price", "Type"
+        "Ticket Number", "Unit Price", "Type", "RTN_CR_No"
     ]
 
     for idx, row in results.iterrows():
