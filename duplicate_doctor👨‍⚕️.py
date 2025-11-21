@@ -1,6 +1,6 @@
 from datetime import datetime
 import math
-from typing import Iterable, Dict, Any, Tuple
+from typing import Dict, Any, Tuple
 from collections import defaultdict
 
 import pandas as pd
@@ -123,7 +123,6 @@ def safe_int(x):
 def make_dedupe_key(rec: Dict[str, Any]) -> Tuple:
     """
     Composite key used to define a 'logical duplicate'.
-    Adjust if you want more/less strict matching.
     """
     return (
         norm_ticket(rec.get("Ticket Number", "")),
@@ -147,7 +146,6 @@ if st.button("🔍 Run Duplicate Scan", type="primary", key="scan_button"):
             if not isinstance(rec, dict):
                 continue
 
-            # Build a flattened, normalized view
             ticket = norm_ticket(rec.get("Ticket Number", ""))
             invoice = norm_invoice(rec.get("Invoice Number", ""))
             item = (
@@ -206,7 +204,6 @@ if st.button("🔍 Run Duplicate Scan", type="primary", key="scan_button"):
                 st.info("No logical duplicates found with the current dedupe key.")
                 st.session_state.pop("dup_df", None)
             else:
-                # Flatten duplicate groups into a DataFrame
                 flat_rows = []
                 for key, group_recs in duplicate_groups.items():
                     group_size = len(group_recs)
@@ -218,14 +215,12 @@ if st.button("🔍 Run Duplicate Scan", type="primary", key="scan_button"):
 
                 dup_df = pd.DataFrame(flat_rows)
 
-                # Add Delete flag (default False)
+                # Ensure Delete flag exists (default False)
                 dup_df["Delete"] = False
 
-                # Store in session_state so we can interact with it
                 st.session_state["dup_df"] = dup_df
 
 else:
-    # Just show existing metrics/info if any from prior run
     st.info("Click **'🔍 Run Duplicate Scan'** to analyze current Firebase records.")
 
 # =========================
@@ -259,7 +254,11 @@ if "dup_df" in st.session_state:
         "Dedupe Key (str)",
     ]
 
-    # Data editor with checkbox for Delete
+    # Guarantee Delete column exists before editing
+    if "Delete" not in dup_df.columns:
+        dup_df["Delete"] = False
+
+    # Editor view
     edited_df = st.data_editor(
         dup_df[display_cols],
         use_container_width=True,
@@ -268,38 +267,12 @@ if "dup_df" in st.session_state:
         key="dup_editor",
     )
 
-    # Persist edited flags back to session_state
-    # (so the Delete button can read latest selections)
-    merged = dup_df.copy()
-    # Only update the Delete column from edited_df
-    merged = merged.drop(columns=["Delete"])
-    merged = edited_df.merge(
-        merged.drop(columns=["Delete"]),
-        on=[
-            "Duplicate Group Size",
-            "Ticket Number",
-            "Invoice Number",
-            "Item Number",
-            "QTY",
-            "Credit Request Total",
-            "Credit Type",
-            "Issue Type",
-            "Sales Rep",
-            "Requested By",
-            "Date",
-            "_firebase_key",
-            "Record ID",
-            "Dedupe Key (str)",
-        ],
-        how="left",
-        suffixes=("", "_orig"),
-    )
-    # Clean up possible extra columns
-    cols_to_keep = dup_df.columns
-    merged = merged[[c for c in merged.columns if c in cols_to_keep]]
+    # ✅ Simple, robust sync: same row order, just copy Delete values back
+    if "Delete" in edited_df.columns:
+        dup_df["Delete"] = edited_df["Delete"].astype(bool).values
 
-    st.session_state["dup_df"] = merged
-    dup_df = merged  # refreshed reference
+    # Save back to session_state
+    st.session_state["dup_df"] = dup_df
 
     # Download CSV of current view (with Delete flags)
     csv_bytes = dup_df.to_csv(index=False).encode("utf-8")
@@ -334,7 +307,7 @@ if "dup_df" in st.session_state:
                         failed += 1
                         errors.append(f"{fb_key}: {e}")
 
-                # Remove deleted rows from in-memory DataFrame
+                # Remove deleted rows from DataFrame
                 dup_df = dup_df[~dup_df["_firebase_key"].isin(unique_keys)].reset_index(drop=True)
                 st.session_state["dup_df"] = dup_df
 
@@ -344,7 +317,6 @@ if "dup_df" in st.session_state:
                 with st.expander("Error details"):
                     for line in errors:
                         st.write(line)
-
     else:
         st.info("No rows are currently marked for deletion.")
 
