@@ -178,7 +178,7 @@ df_filtered.fillna({'QTY':0, 'Unit Price':0, 'Corrected Unit Price':0, 'Credit R
 df_filtered['Invoice Number'] = df_filtered['Invoice Number'].map(norm_invoice)
 df_filtered['Item Number']    = df_filtered['Item Number'].map(norm_item)
 
-# Existing pairs (dedupe)
+# Existing pairs (dedupe vs Firebase)
 existing_pairs = set()
 try:
     existing_data = ref.get() or {}
@@ -259,16 +259,29 @@ if st.button("🚀 Submit Edited Rows to Firebase"):
     failed = 0
     details = []
 
+    # 🔑 NEW: track duplicates inside THIS upload/template
+    local_pairs = set()
+
     with st.spinner("Submitting rows…"):
         for i, row in edited_df.iterrows():
             inv  = norm_invoice(row['Invoice Number'])
             item = None if row['Issue Type'] == 'Tax' else norm_item(row['Item Number'])
+            pair = (inv, item)
 
             # duplicate check (non-Tax only)
-            if row['Issue Type'] != 'Tax' and (inv, item) in existing_pairs:
-                skipped_dupe += 1
-                details.append(f"Row {i}: skipped duplicate (Invoice {inv}, Item {item})")
-                continue
+            if row['Issue Type'] != 'Tax':
+                if pair in existing_pairs:
+                    skipped_dupe += 1
+                    details.append(
+                        f"Row {i}: skipped duplicate already in Firebase (Invoice {inv}, Item {item})"
+                    )
+                    continue
+                if pair in local_pairs:
+                    skipped_dupe += 1
+                    details.append(
+                        f"Row {i}: skipped duplicate within this upload (Invoice {inv}, Item {item})"
+                    )
+                    continue
 
             record = row.to_dict()
             record['Invoice Number'] = inv
@@ -301,6 +314,12 @@ if st.button("🚀 Submit Edited Rows to Firebase"):
                 ref.push(record)
                 submitted += 1
                 details.append(f"Row {i}: ✅ submitted (Invoice {inv}, Item {item})")
+
+                # 🔑 NEW: mark this pair as seen in this upload (and for later rows)
+                if row['Issue Type'] != 'Tax':
+                    local_pairs.add(pair)
+                    existing_pairs.add(pair)
+
             except Exception as e:
                 failed += 1
                 details.append(f"Row {i}: 🔥 failed (Invoice {inv}, Item {item}) → {e}")
