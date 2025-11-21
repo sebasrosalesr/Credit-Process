@@ -12,7 +12,7 @@ from firebase_admin import credentials, db
 # =========================
 # CONFIG
 # =========================
-st.set_page_config(page_title="Credit Request and editable table BETA version📄", layout="wide")
+st.set_page_config(page_title="Credit Request Search and editable table BETA version📄", layout="wide")
 
 APP_PASSWORD = st.secrets.get("APP_PASSWORD", "test123")
 
@@ -537,6 +537,7 @@ if df_state is not None and matches_state is not None:
     )
 
     if enable_writeback:
+        # Option A: write back what is currently in the editor
         if st.button("💾 Save edits to Firebase"):
             try:
                 updated_count = 0
@@ -562,5 +563,49 @@ if df_state is not None and matches_state is not None:
                 st.success(f"✅ Successfully wrote back {updated_count} record(s) to Firebase.")
             except Exception as e:
                 st.error(f"🔥 Error writing to Firebase: {e}")
+
+        # ---------- OPTION B: UPLOAD CSV AND APPLY TO FIREBASE ----------
+        st.markdown("#### 📤 Option B: Upload edited CSV and push to Firebase")
+
+        uploaded_update_csv = st.file_uploader(
+            "Upload a CSV (e.g. the edited file you downloaded from this app). "
+            "It must include a 'Record ID' column.",
+            type=["csv"],
+            key="writeback_csv",
+        )
+
+        if uploaded_update_csv is not None:
+            if st.button("💾 Apply uploaded CSV to Firebase"):
+                try:
+                    update_df = pd.read_csv(uploaded_update_csv)
+
+                    if "Record ID" not in update_df.columns:
+                        st.error("❌ Uploaded CSV must have a 'Record ID' column.")
+                    else:
+                        updated_count = 0
+
+                        for _, row in update_df.iterrows():
+                            raw_key = row.get("Record ID", "")
+                            key = str(raw_key).strip()
+                            if not key or key.lower() == "nan":
+                                continue
+
+                            payload = {}
+                            for col_name, value in row.items():
+                                if col_name == "Record ID":
+                                    continue
+                                if isinstance(value, float) and pd.isna(value):
+                                    payload[col_name] = None
+                                else:
+                                    payload[col_name] = value
+
+                            ref.child(key).update(payload)
+                            updated_count += 1
+
+                        st.success(
+                            f"✅ Successfully applied {updated_count} row(s) from uploaded CSV to Firebase."
+                        )
+                except Exception as e:
+                    st.error(f"🔥 Error applying uploaded CSV to Firebase: {e}")
 else:
-    st.info("Run a search to view, edit, and optionally write back results.")
+    st.info("Run a search to view, edit, download, and optionally write back results.")
