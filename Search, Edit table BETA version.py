@@ -158,7 +158,7 @@ def parse_pasted_list(raw: str) -> List[str]:
 # =========================
 # UI HEADER
 # =========================
-st.title("🔍 Credit Request Search Tool")
+st.title("🔍 Credit Request Search and editable table BETA version📄")
 st.markdown(
     "Search by Ticket, Invoice, Item, Invoice+Item Pair, or use **bulk paste** for "
     "**Tickets, Invoices, Items, Customers, or RTNs**. "
