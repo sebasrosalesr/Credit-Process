@@ -87,6 +87,20 @@ if not firebase_admin._apps:
 ref = db.reference(DB_NODE)
 
 # =========================
+# SESSION STATE INIT
+# =========================
+if "results_df" not in st.session_state:
+    st.session_state["results_df"] = None
+if "results_json" not in st.session_state:
+    st.session_state["results_json"] = None
+if "pasted_values" not in st.session_state:
+    st.session_state["pasted_values"] = []
+if "not_found" not in st.session_state:
+    st.session_state["not_found"] = []
+if "last_search_type" not in st.session_state:
+    st.session_state["last_search_type"] = None
+
+# =========================
 # HELPERS
 # =========================
 def safe_str(v) -> str:
@@ -148,7 +162,7 @@ st.title("🔍 Credit Request Search Tool")
 st.markdown(
     "Search by Ticket, Invoice, Item, Invoice+Item Pair, or use **bulk paste** for "
     "**Tickets, Invoices, Items, Customers, or RTNs**. "
-    "You can now **edit the results directly in the table** before exporting."
+    "You can now **edit the results directly in the table** and optionally **write them back to Firebase**."
 )
 
 search_type = st.selectbox(
@@ -402,26 +416,8 @@ if st.button("🔎 Search"):
                             matched_values.add(val)
                     not_found = [v for v in pasted_values if v not in matched_values]
 
-        # =========================
-        # RESULTS UI
-        # =========================
+        # Store results in session_state so they persist across reruns
         if matches:
-            st.success(f"✅ {len(matches)} record(s) found.")
-
-            if search_type in [
-                "Multiple Tickets (paste list)",
-                "Multiple Invoices (paste list)",
-                "Multiple RTNs (paste list)",
-                "Multiple Items (paste list)",
-                "Multiple Customers (paste list)",
-            ]:
-                matched_count = len(set(pasted_values) - set(not_found))
-                st.info(
-                    f"🔎 Pasted: {len(pasted_values)} • "
-                    f"✅ Matched: {matched_count} • "
-                    f"❌ Not found: {len(not_found)}"
-                )
-
             df_export = pd.DataFrame(matches)
 
             # Normalize ID-like fields and uppercase strings
@@ -440,56 +436,131 @@ if st.button("🔎 Search"):
                         pd.to_numeric(df_export[col], errors="coerce").round(2)
                     )
 
-            st.markdown(
-                "✏️ **Edit table below**. Changes affect the JSON view and the CSV download, "
-                "but are **not** written back to Firebase (yet)."
-            )
-
-            # ---------- EDITABLE TABLE ----------
-            edited_df = st.data_editor(
-                df_export,
-                use_container_width=True,
-                num_rows="dynamic",
-                column_config={
-                    INVOICE_FIELD: st.column_config.TextColumn(),
-                    ITEM_FIELD: st.column_config.TextColumn(),
-                    TICKET_FIELD: st.column_config.TextColumn(),
-                    CUSTOMER_FIELD: st.column_config.TextColumn(),
-                    RTN_FIELD: st.column_config.TextColumn(),
-                    "Record ID": st.column_config.TextColumn(
-                        help="Firebase key for this record"
-                    ),
-                    "Credit Request Total": st.column_config.NumberColumn(
-                        format="%.2f"
-                    ),
-                    "Extended Price": st.column_config.NumberColumn(format="%.2f"),
-                    "Unit Price": st.column_config.NumberColumn(format="%.2f"),
-                    "Corrected Unit Price": st.column_config.NumberColumn(
-                        format="%.2f"
-                    ),
-                },
-                key="editable_results",
-            )
-
-            # ---------- JSON VIEW (BASED ON EDITED DATA) ----------
-            st.subheader("📦 JSON view (per record)")
-            edited_records = edited_df.to_dict(orient="records")
-            for i, rec in enumerate(edited_records, start=1):
-                label = f"Record {i} — Ticket: {rec.get(TICKET_FIELD, 'N/A')}"
-                with st.expander(label):
-                    st.json(rec)
-
-            # ---------- CSV DOWNLOAD (EDITED DATA) ----------
-            csv_buffer = io.StringIO()
-            edited_df.to_csv(csv_buffer, index=False)
-            st.download_button(
-                label="⬇️ Download Edited Results as CSV",
-                data=csv_buffer.getvalue(),
-                file_name="credit_request_results_edited.csv",
-                mime="text/csv",
-            )
+            st.session_state["results_df"] = df_export
+            st.session_state["results_json"] = matches
+            st.session_state["pasted_values"] = pasted_values
+            st.session_state["not_found"] = not_found
+            st.session_state["last_search_type"] = search_type
         else:
+            st.session_state["results_df"] = None
+            st.session_state["results_json"] = None
+            st.session_state["pasted_values"] = []
+            st.session_state["not_found"] = []
+            st.session_state["last_search_type"] = search_type
             st.warning("❌ No matching records found.")
 
     except Exception as e:
         st.error(f"🔥 Error retrieving records: {e}")
+
+# =========================
+# RESULTS + EDIT / SAVE
+# =========================
+df_state = st.session_state.get("results_df")
+matches_state = st.session_state.get("results_json")
+
+if df_state is not None and matches_state is not None:
+    search_type_state = st.session_state.get("last_search_type")
+    pasted_values = st.session_state.get("pasted_values", [])
+    not_found = st.session_state.get("not_found", [])
+
+    st.success(f"✅ {len(matches_state)} record(s) found.")
+
+    if search_type_state in [
+        "Multiple Tickets (paste list)",
+        "Multiple Invoices (paste list)",
+        "Multiple RTNs (paste list)",
+        "Multiple Items (paste list)",
+        "Multiple Customers (paste list)",
+    ]:
+        matched_count = len(set(pasted_values) - set(not_found))
+        st.info(
+            f"🔎 Pasted: {len(pasted_values)} • "
+            f"✅ Matched: {matched_count} • "
+            f"❌ Not found: {len(not_found)}"
+        )
+
+    st.markdown(
+        "✏️ **Edit the table below**. Changes affect the JSON view, CSV download, "
+        "and (if enabled) Firebase write-back."
+    )
+
+    # ---------- EDITABLE TABLE ----------
+    edited_df = st.data_editor(
+        df_state,
+        use_container_width=True,
+        num_rows="dynamic",
+        column_config={
+            INVOICE_FIELD: st.column_config.TextColumn(),
+            ITEM_FIELD: st.column_config.TextColumn(),
+            TICKET_FIELD: st.column_config.TextColumn(),
+            CUSTOMER_FIELD: st.column_config.TextColumn(),
+            RTN_FIELD: st.column_config.TextColumn(),
+            "Record ID": st.column_config.TextColumn(
+                help="Firebase key for this record"
+            ),
+            "Credit Request Total": st.column_config.NumberColumn(format="%.2f"),
+            "Extended Price": st.column_config.NumberColumn(format="%.2f"),
+            "Unit Price": st.column_config.NumberColumn(format="%.2f"),
+            "Corrected Unit Price": st.column_config.NumberColumn(format="%.2f"),
+        },
+        key="editable_results",
+    )
+
+    # Persist latest edits into state so they survive more reruns
+    st.session_state["results_df"] = edited_df
+
+    # ---------- JSON VIEW (EDITED DATA) ----------
+    st.subheader("📦 JSON view (per record)")
+    edited_records = edited_df.to_dict(orient="records")
+    for i, rec in enumerate(edited_records, start=1):
+        label = f"Record {i} — Ticket: {rec.get(TICKET_FIELD, 'N/A')}"
+        with st.expander(label):
+            st.json(rec)
+
+    # ---------- CSV DOWNLOAD (EDITED DATA) ----------
+    csv_buffer = io.StringIO()
+    edited_df.to_csv(csv_buffer, index=False)
+    st.download_button(
+        label="⬇️ Download Edited Results as CSV",
+        data=csv_buffer.getvalue(),
+        file_name="credit_request_results_edited.csv",
+        mime="text/csv",
+    )
+
+    # ---------- FIREBASE WRITE-BACK ----------
+    st.markdown("---")
+    st.subheader("⚠️ Firebase Write-Back (Danger Zone)")
+
+    enable_writeback = st.checkbox(
+        "⚠️ Enable Firebase write-back (danger zone)",
+        help="If enabled, clicking 'Save edits to Firebase' will overwrite these records in the database.",
+    )
+
+    if enable_writeback:
+        if st.button("💾 Save edits to Firebase"):
+            try:
+                updated_count = 0
+                for row in edited_records:
+                    key = row.get("Record ID")
+                    if not key:
+                        continue
+
+                    # Build payload without Record ID and convert NaN -> None
+                    payload = {}
+                    for k, v in row.items():
+                        if k == "Record ID":
+                            continue
+                        # Convert pandas NaN to None so Firebase doesn't store 'nan'
+                        if isinstance(v, float) and pd.isna(v):
+                            payload[k] = None
+                        else:
+                            payload[k] = v
+
+                    ref.child(key).update(payload)
+                    updated_count += 1
+
+                st.success(f"✅ Successfully wrote back {updated_count} record(s) to Firebase.")
+            except Exception as e:
+                st.error(f"🔥 Error writing to Firebase: {e}")
+else:
+    st.info("Run a search to view, edit, and optionally write back results.")
