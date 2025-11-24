@@ -250,7 +250,7 @@ if "dup_df" in st.session_state:
         "Requested By",
         "Date",
         "_firebase_key",
-        "Record ID",
+        "Status",
         "Dedupe Key (str)",
     ]
 
